@@ -205,3 +205,19 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Claude Assistant Bridge — additional .gitignore entries
+
+# Secrets — never commit these
+.env
+
+# Runtime data — personal, changes constantly
+tasks.json
+run_log.jsonl
+
+# Logs
+logs/
+
+# Windows
+Thumbs.db
+Desktop.ini
