@@ -95,8 +95,14 @@ logging.basicConfig(
 # App
 # ---------------------------------------------------------------------------
 
-app = FastAPI()
+from contextlib import asynccontextmanager
 
+@asynccontextmanager
+async def lifespan(app):
+    await startup()
+    yield
+
+app = FastAPI(lifespan=lifespan)
 
 def get_tunnel_url(retries=10, delay=3) -> str:
     """Poll cloudflared's local API to get the current tunnel URL."""
@@ -210,7 +216,6 @@ async def webhook(request: Request):
 # Startup
 # ---------------------------------------------------------------------------
 
-@app.on_event("startup")
 async def startup():
     print(f"Platform: {platform.system()}")
     print(f"Claude executable: {CLAUDE_EXE}")
