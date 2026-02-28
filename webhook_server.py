@@ -1,5 +1,13 @@
+"""
+Claude Assistant Bridge — Webhook Server
+Receives Telegram messages and routes them to Claude Code for execution.
+Runs as a persistent service (Windows: Task Scheduler, Linux: systemd).
+"""
+
 import os
+import glob
 import time
+import platform
 import subprocess
 import requests
 import logging
@@ -8,8 +16,18 @@ from fastapi import FastAPI, Request
 from dotenv import load_dotenv
 import uvicorn
 
-# Load config
-load_dotenv()
+# ---------------------------------------------------------------------------
+# Platform detection
+# ---------------------------------------------------------------------------
+
+IS_WINDOWS = platform.system() == "Windows"
+
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
+
+load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), ".env"))
+
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ALLOWED_USER_ID = int(os.getenv("TELEGRAM_ALLOWED_USER_ID"))
 PORT = int(os.getenv("WEBHOOK_PORT", 8080))
@@ -17,17 +35,68 @@ TASKS_FILE = os.getenv("TASKS_FILE")
 RUN_LOG_FILE = os.getenv("RUN_LOG_FILE")
 LOGS_DIR = os.getenv("LOGS_DIR")
 USER_NAME = os.getenv("USER_DISPLAY_NAME", "User")
-TIMEZONE = os.getenv("TIMEZONE", "America/New_York")
+TIMEZONE = os.getenv("TIMEZONE", "America/Chicago")
 
+# ---------------------------------------------------------------------------
+# Claude executable resolution
+# ---------------------------------------------------------------------------
+
+def _find_claude_windows() -> str:
+    """
+    Search known Windows installation paths for claude.exe.
+    Returns the path to the most recent version found, or 'claude' as fallback.
+    """
+    appdata = os.environ.get("APPDATA", "")
+    patterns = [
+        os.path.join(appdata, "Claude", "claude-code", "*", "claude.exe"),
+        os.path.join(appdata, "npm", "claude.cmd"),
+        os.path.join(appdata, "npm", "claude"),
+    ]
+    candidates = []
+    for pattern in patterns:
+        matches = glob.glob(pattern)
+        candidates.extend(matches)
+
+    if not candidates:
+        return "claude"  # Hope it's on PATH
+
+    # Prefer versioned claude-code installs, pick the most recent by path sort
+    versioned = [c for c in candidates if "claude-code" in c]
+    if versioned:
+        return sorted(versioned)[-1]  # Highest version number last alphabetically
+
+    return candidates[0]
+
+
+def _resolve_claude_exe() -> str:
+    """Resolve Claude executable path. Env var always wins."""
+    if os.getenv("CLAUDE_EXE"):
+        return os.getenv("CLAUDE_EXE")
+    if IS_WINDOWS:
+        found = _find_claude_windows()
+        return found
+    return "claude"  # Linux: assume on PATH after `npm install -g`
+
+
+CLAUDE_EXE = _resolve_claude_exe()
+
+# ---------------------------------------------------------------------------
 # Logging
+# ---------------------------------------------------------------------------
+
 os.makedirs(LOGS_DIR, exist_ok=True)
 logging.basicConfig(
-    filename=f"{LOGS_DIR}/webhook.log",
+    filename=os.path.join(LOGS_DIR, "webhook.log"),
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s"
 )
 
+# ---------------------------------------------------------------------------
+# App
+# ---------------------------------------------------------------------------
+
 app = FastAPI()
+
 
 def get_tunnel_url(retries=10, delay=3) -> str:
     """Poll cloudflared's local API to get the current tunnel URL."""
@@ -39,21 +108,24 @@ def get_tunnel_url(retries=10, delay=3) -> str:
                 logging.info(f"Detected tunnel URL: {url}")
                 print(f"Detected tunnel URL: {url}")
                 return url
-        except Exception as e:
+        except Exception:
             print(f"Waiting for cloudflared tunnel... ({i+1}/{retries})")
             time.sleep(delay)
-    # Fallback to .env value if cloudflared API not available
     fallback = os.getenv("CLOUDFLARE_TUNNEL_URL", "")
     logging.warning(f"Could not detect tunnel URL, using fallback: {fallback}")
     print(f"Using fallback tunnel URL from .env: {fallback}")
     return fallback
 
+
 def send_telegram(chat_id: int, text: str):
+    """Send a message to a Telegram chat, splitting if over 4000 chars."""
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     for i in range(0, len(text), 4000):
         requests.post(url, json={"chat_id": chat_id, "text": text[i:i+4000]})
 
+
 def register_webhook(tunnel_url: str):
+    """Register the webhook URL with Telegram. Raises on failure."""
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook"
     webhook_url = f"{tunnel_url}/webhook"
     resp = requests.post(url, json={"url": webhook_url})
@@ -63,22 +135,44 @@ def register_webhook(tunnel_url: str):
     if not result.get("ok"):
         raise Exception(f"Telegram rejected webhook: {result.get('description')}")
 
+
+def load_skill(skill_path: str) -> str:
+    """Load a skill file and return its contents, or empty string if not found."""
+    full_path = os.path.join(os.path.dirname(__file__), skill_path)
+    if os.path.exists(full_path):
+        with open(full_path, "r", encoding="utf-8") as f:
+            return f.read()
+    return ""
+
+
 def run_claude(message: str) -> str:
+    """Invoke Claude Code with the user message and system context."""
+    task_manager_skill = load_skill("skills/task_manager.md")
+
     system_context = (
         f"You are a personal AI assistant for {USER_NAME}. "
         f"Current time: {datetime.now().strftime('%Y-%m-%d %H:%M')} ({TIMEZONE}). "
         f"Tasks file: {TASKS_FILE}. "
         f"Run log: {RUN_LOG_FILE}. "
-        f"When the user asks to schedule, list, modify or cancel tasks, read/write the tasks file directly. "
-        f"When the user asks about task history or failures, read the run log. "
-        f"Keep responses concise — this is a messaging interface. "
-        f"User message: {message}"
+        f"Keep responses concise — this is a messaging interface.\n\n"
     )
+
+    if task_manager_skill:
+        system_context += f"## Task Management Skill\n\n{task_manager_skill}\n\n"
+
+    system_context += f"User message: {message}"
+
     result = subprocess.run(
-        [r"C:\Users\geral\AppData\Roaming\Claude\claude-code\2.1.51\claude.exe", "-p", system_context, "--dangerously-skip-permissions"],
-        capture_output=True, text=True, timeout=120
+        [CLAUDE_EXE, "-p", system_context, "--dangerously-skip-permissions"],
+        capture_output=True, text=True, timeout=120,
+        encoding="utf-8", errors="replace"
     )
     return result.stdout.strip() or result.stderr.strip() or "No response from Claude."
+
+
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
 
 @app.post("/webhook")
 async def webhook(request: Request):
@@ -102,7 +196,7 @@ async def webhook(request: Request):
 
         response = run_claude(text)
         send_telegram(chat_id, response)
-        logging.info(f"Responded successfully")
+        logging.info("Responded successfully")
 
     except Exception as e:
         logging.error(f"Error: {e}")
@@ -111,12 +205,18 @@ async def webhook(request: Request):
 
     return {"ok": True}
 
+
+# ---------------------------------------------------------------------------
+# Startup
+# ---------------------------------------------------------------------------
+
 @app.on_event("startup")
 async def startup():
+    print(f"Platform: {platform.system()}")
+    print(f"Claude executable: {CLAUDE_EXE}")
     print("Waiting 30 seconds for network to initialize...")
     time.sleep(30)
     tunnel_url = get_tunnel_url()
-    # Retry webhook registration until network is ready
     for attempt in range(20):
         try:
             register_webhook(tunnel_url)
@@ -125,6 +225,7 @@ async def startup():
             print(f"Webhook registration attempt {attempt+1} failed: {e}, retrying in 8s...")
             time.sleep(8)
     print(f"Claude Assistant Bridge running on port {PORT}")
+
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=PORT)
