@@ -94,18 +94,6 @@ Send these directly to your bot:
 
 ---
 
-## Project Status
-
-| Phase | Description | Status |
-|-------|-------------|--------|
-| 1 | Core pipeline — Telegram → Claude Code → response | ✅ Complete |
-| 2 | Task scheduler with catch-up logic and run logging | ✅ Complete |
-| 3 | Natural language scheduling via Telegram | ✅ Complete |
-| 4 | Cross-platform polish — setup wizard, tests, docs | ✅ Complete |
-| 5 | Linux VPS deployment | ✅ Complete |
-
----
-
 ## Why not OpenClaw?
 
 OpenClaw is powerful, but for Windows Claude Max users it has real friction:
