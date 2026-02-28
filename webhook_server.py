@@ -219,9 +219,14 @@ async def webhook(request: Request):
 async def startup():
     print(f"Platform: {platform.system()}")
     print(f"Claude executable: {CLAUDE_EXE}")
-    print("Waiting 30 seconds for network to initialize...")
-    time.sleep(30)
-    tunnel_url = get_tunnel_url()
+    static_url = os.getenv("CLOUDFLARE_TUNNEL_URL", "")
+    if static_url:
+        print(f"Using static URL: {static_url}")
+        tunnel_url = static_url
+    else:
+        print("Waiting 30 seconds for network to initialize...")
+        time.sleep(30)
+        tunnel_url = get_tunnel_url()
     for attempt in range(20):
         try:
             register_webhook(tunnel_url)
