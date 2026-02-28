@@ -74,7 +74,8 @@ Restart=on-failure
 RestartSec=10
 StandardOutput=append:{logs_dir}/webhook.log
 StandardError=append:{logs_dir}/webhook.log
-Environment="PATH={path}"
+Environment="PATH={path}:/usr/lib/node_modules/.bin"
+Environment="HOME=/home/{user}"
 
 [Install]
 WantedBy=multi-user.target
