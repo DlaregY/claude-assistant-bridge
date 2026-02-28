@@ -1,0 +1,20 @@
+{
+  "version": "1.0",
+  "tasks": [
+    {
+      "id": "example-task",
+      "description": "Example task — edit or delete this",
+      "schedule": {
+        "type": "daily",
+        "time": "09:00"
+      },
+      "prompt": "Send me a good morning message with today's date.",
+      "enabled": false,
+      "catch_up": false,
+      "catch_up_window_hours": null,
+      "last_run": null,
+      "created": "2026-02-27T00:00:00",
+      "tags": ["example"]
+    }
+  ]
+}
