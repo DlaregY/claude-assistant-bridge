@@ -159,9 +159,9 @@ Replace the placeholder values:
 Create data files:
 
 ```bash
-mkdir -p logs
+mkdir -p logs context
 echo '{"version": "1.0", "tasks": []}' > tasks.json
-touch run_log.jsonl
+touch run_log.jsonl notes.md
 ```
 
 ---

@@ -113,8 +113,10 @@ Save and close Notepad.
 
 ```cmd
 mkdir logs
+mkdir context
 echo {"version": "1.0", "tasks": []} > tasks.json
 type nul > run_log.jsonl
+type nul > notes.md
 ```
 
 ---
@@ -278,7 +280,7 @@ The service is running as the wrong user. Ensure the Task Scheduler tasks are co
 
 **Garbled characters in responses (â€" instead of —)**
 
-This is a text encoding issue. Ensure your `webhook_server.py` includes `encoding="utf-8"` in the subprocess call. Pull the latest version from the repo and restart.
+This encoding issue is fixed in the current version (`encoding="utf-8"` is set in both `webhook_server.py` and `runner.py`). If you still see it, pull the latest version and restart.
 
 **Tasks not firing on schedule**
 
@@ -286,9 +288,10 @@ Check the runner log for skipped entries:
 
 ```cmd
 type C:\AIAssistant\run_log.jsonl
+type C:\AIAssistant\logs\runner.log
 ```
 
-If entries show `status: skipped` with `catch_up=false`, the task missed its window. If entries show `status: error`, check the error field for details.
+If entries show `status: skipped` with `catch_up=false`, the task missed its window. If entries show `status: error`, check the error field for details. If the runner starts but never logs "Runner finished", a task definition may be malformed — check `tasks.json` for syntax issues (cron tasks must use the `"expression"` key, not `"cron"`).
 
 ---
 
@@ -297,5 +300,7 @@ If entries show `status: skipped` with `catch_up=false`, the task missed its win
 **The tunnel URL changes on restart.** Cloudflared's free quick tunnel generates a new URL each time cloudflared restarts. CAB handles this automatically — the webhook server detects the new URL and re-registers with Telegram on startup. No manual intervention needed.
 
 **Your PC must be on for tasks to execute.** If the PC is off at a scheduled task time, CAB uses catch-up logic to run the task when the PC wakes up, within the configured window. Tasks with `catch_up: false` are skipped entirely if missed.
+
+**notes.md is auto-maintained by the assistant.** Every conversation injects `notes.md` as context and instructs the AI to update it with project paths, preferences, and decisions. You can also edit it manually to pre-populate context. This file is gitignored.
 
 **Want 24/7 uptime?** Deploy CAB on a Linux VPS instead — see [docs/setup-linux-vps.md](docs/setup-linux-vps.md). You can run both simultaneously with separate Telegram bots.

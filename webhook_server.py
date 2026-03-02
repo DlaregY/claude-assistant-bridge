@@ -151,23 +151,27 @@ def load_skill(skill_path: str) -> str:
     return ""
 
 
+def load_context_files() -> str:
+    """Load all per-project context files from context/ directory."""
+    context_dir = os.path.join(os.path.dirname(__file__), "context")
+    if not os.path.isdir(context_dir):
+        return ""
+    parts = []
+    for path in sorted(glob.glob(os.path.join(context_dir, "*.md"))):
+        name = os.path.splitext(os.path.basename(path))[0]
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read().strip()
+        if content:
+            parts.append(f"### {name}\n{content}")
+    return "\n\n".join(parts)
+
+
 def run_claude(message: str) -> str:
     """Invoke Claude Code with the user message and system context."""
     task_manager_skill = load_skill("skills/task_manager.md")
-
     notes = load_skill("notes.md")
-
-    system_context += (
-        f"## Notes Instructions\n\n"
-        f"You have read/write access to notes.md at {os.path.join(os.path.dirname(__file__), 'notes.md')}. "
-        f"Automatically update it when you learn any of the following:\n"
-        f"- File paths to projects, websites, or important directories\n"
-        f"- Account details, usernames, or service names (never passwords or tokens)\n"
-        f"- Preferences or recurring instructions Gerald gives you\n"
-        f"- Decisions made about ongoing projects\n"
-        f"- Anything Gerald explicitly asks you to remember\n\n"
-        f"Do NOT note: one-off tasks, general knowledge, or anything already in notes.md.\n\n"
-    )
+    project_context = load_context_files()
+    base_dir = os.path.dirname(__file__)
 
     system_context = (
         f"You are a personal AI assistant for {USER_NAME}. "
@@ -179,6 +183,24 @@ def run_claude(message: str) -> str:
 
     if notes:
         system_context += f"## Notes\n\n{notes}\n\n"
+
+    if project_context:
+        system_context += f"## Project Context\n\n{project_context}\n\n"
+
+    system_context += (
+        f"## Context Management\n\n"
+        f"You have read/write access to persistent context files. "
+        f"Automatically update them when you learn relevant information.\n\n"
+        f"**notes.md** ({os.path.join(base_dir, 'notes.md')}): "
+        f"General preferences, account info, recurring instructions. "
+        f"Update when you learn preferences, usernames, or things Gerald asks you to remember.\n\n"
+        f"**context/<project-name>.md** ({os.path.join(base_dir, 'context', '')}): "
+        f"Per-project details — paths, architecture, deployment info, decisions. "
+        f"Create a new file when encountering a project for the first time. "
+        f"Update existing files when learning new project details.\n\n"
+        f"Do NOT note: one-off tasks, general knowledge, passwords/tokens, "
+        f"or anything already captured in existing files.\n\n"
+    )
 
     if task_manager_skill:
         system_context += f"## Task Management Skill\n\n{task_manager_skill}\n\n"

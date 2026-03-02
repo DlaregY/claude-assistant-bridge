@@ -86,7 +86,7 @@ Valid day values: MON TUE WED THU FRI SAT SUN
 The `prompt` field is what Claude Code actually executes. Write it as a clear, self-contained instruction:
 
 **Good:**
-> "Check the Downloads folder at C:/Users/geral/Downloads and summarize any files added in the last 7 days. Include file names, sizes, and types."
+> "Check the Downloads folder and summarize any files added in the last 7 days. Include file names, sizes, and types."
 
 **Bad:**
 > "Check downloads"

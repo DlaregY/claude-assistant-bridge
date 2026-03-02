@@ -271,53 +271,57 @@ def main():
 
     for task in tasks:
         task_id = task["id"]
-        last_success = last_runs.get(task_id)
-        after = last_success if last_success else datetime(2000, 1, 1)
-        due_time = get_due_time(task, after)
+        try:
+            last_success = last_runs.get(task_id)
+            after = last_success if last_success else datetime(2000, 1, 1)
+            due_time = get_due_time(task, after)
 
-        if due_time is None:
-            continue
-
-        minutes_late = (now - due_time).total_seconds() / 60
-        is_catchup = minutes_late > 6
-
-        if is_catchup:
-            catch_up = task.get("catch_up", False)
-            window = task.get("catch_up_window_hours")
-
-            if not catch_up:
-                reason = f"catch_up=false, missed by {int(minutes_late)}min"
-                append_log({
-                    "timestamp": now.isoformat(timespec="seconds"),
-                    "task_id": task_id,
-                    "trigger": "scheduled",
-                    "status": "skipped",
-                    "reason": reason
-                })
-                logging.info(f"Task {task_id} skipped: {reason}")
+            if due_time is None:
                 continue
 
-            if window is not None:
-                hours_late = minutes_late / 60
-                if hours_late > window:
-                    reason = f"missed by {hours_late:.1f}h, window={window}h"
+            minutes_late = (now - due_time).total_seconds() / 60
+            is_catchup = minutes_late > 6
+
+            if is_catchup:
+                catch_up = task.get("catch_up", False)
+                window = task.get("catch_up_window_hours")
+
+                if not catch_up:
+                    reason = f"catch_up=false, missed by {int(minutes_late)}min"
                     append_log({
                         "timestamp": now.isoformat(timespec="seconds"),
                         "task_id": task_id,
-                        "trigger": "catch_up",
+                        "trigger": "scheduled",
                         "status": "skipped",
                         "reason": reason
                     })
-                    logging.info(f"Task {task_id} skipped (outside catch-up window): {reason}")
+                    logging.info(f"Task {task_id} skipped: {reason}")
                     continue
 
-            trigger = "catch_up"
-            logging.info(f"Task {task_id} running as catch-up (missed by {int(minutes_late)}min)")
-        else:
-            trigger = "scheduled"
-            logging.info(f"Task {task_id} running on schedule")
+                if window is not None:
+                    hours_late = minutes_late / 60
+                    if hours_late > window:
+                        reason = f"missed by {hours_late:.1f}h, window={window}h"
+                        append_log({
+                            "timestamp": now.isoformat(timespec="seconds"),
+                            "task_id": task_id,
+                            "trigger": "catch_up",
+                            "status": "skipped",
+                            "reason": reason
+                        })
+                        logging.info(f"Task {task_id} skipped (outside catch-up window): {reason}")
+                        continue
 
-        run_task(task, trigger)
+                trigger = "catch_up"
+                logging.info(f"Task {task_id} running as catch-up (missed by {int(minutes_late)}min)")
+            else:
+                trigger = "scheduled"
+                logging.info(f"Task {task_id} running on schedule")
+
+            run_task(task, trigger)
+        except Exception as e:
+            logging.error(f"Task {task_id} errored during scheduling: {e}")
+            continue
 
     logging.info("Runner finished")
 

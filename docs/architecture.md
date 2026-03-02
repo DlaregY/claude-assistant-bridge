@@ -10,10 +10,12 @@ The system has three moving parts that run independently and communicate through
 2. **Task runner** — fires every 5 minutes, checks for due or missed scheduled tasks, executes them
 3. **Claude Code** — the execution engine that both the webhook server and runner invoke as a subprocess
 
-These three components share two files:
+These three components share several files:
 
 - `tasks.json` — the schedule, managed by Claude Code in response to your natural language requests
 - `run_log.jsonl` — the execution history, written by the runner and readable by Claude Code when you ask about task history
+- `notes.md` — general persistent context (preferences, account info, recurring instructions), auto-maintained by the assistant
+- `context/*.md` — per-project context files (paths, architecture, deployment details), auto-created and updated by the assistant
 
 Nothing is coupled at the code level. The webhook server doesn't know the runner exists. The runner doesn't know the webhook server exists. They communicate entirely through the shared files. This means any component can fail, restart, or be replaced without affecting the others.
 
@@ -129,6 +131,18 @@ Tasks file: C:/AIAssistant/tasks.json.
 Run log: C:/AIAssistant/run_log.jsonl.
 Keep responses concise — this is a messaging interface.
 
+## Notes
+
+[contents of notes.md, if any]
+
+## Project Context
+
+[contents of all context/*.md files, if any]
+
+## Context Management
+
+[instructions for auto-updating notes.md and context/ files]
+
 ## Task Management Skill
 
 [contents of skills/task_manager.md]
@@ -136,7 +150,7 @@ Keep responses concise — this is a messaging interface.
 User message: [message text]
 ```
 
-The skill file is injected inline so Claude Code has complete context about the tasks.json schema without needing to discover it. This makes task management operations reliable and consistent rather than dependent on Claude Code inferring the format from the file contents alone.
+The skill file and context files are injected inline so Claude Code has complete context without needing to discover it. The assistant auto-maintains `notes.md` (general preferences) and `context/<project-name>.md` files (per-project details) as it learns new information during conversations.
 
 For scheduled tasks, the skill is omitted and replaced with task-specific context:
 

@@ -208,12 +208,15 @@ __marimo__/
 
 # Claude Assistant Bridge — additional .gitignore entries
 
-# Secrets — never commit these
+# Secrets and private config — never commit these
 .env
+CLAUDE.md
 
 # Runtime data — personal, changes constantly
 tasks.json
 run_log.jsonl
+notes.md
+context/
 
 # Logs
 logs/

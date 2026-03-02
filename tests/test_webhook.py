@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Set required env vars before importing the app
 os.environ.setdefault("TELEGRAM_BOT_TOKEN", "test_token_123")
-os.environ.setdefault("TELEGRAM_ALLOWED_USER_ID", "8063912669")
+os.environ.setdefault("TELEGRAM_ALLOWED_USER_ID", "123456789")
 os.environ.setdefault("WEBHOOK_PORT", "8080")
 os.environ.setdefault("TASKS_FILE", "/tmp/tasks.json")
 os.environ.setdefault("RUN_LOG_FILE", "/tmp/run_log.jsonl")

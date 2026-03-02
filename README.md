@@ -116,6 +116,9 @@ claude-assistant-bridge/
 ├── setup.py                # Cross-platform setup wizard
 ├── webhook_server.py       # Telegram webhook receiver
 ├── runner.py               # Scheduled task runner
+├── notes.md                # Auto-maintained general context (gitignored)
+├── context/                # Per-project context files (gitignored)
+│   └── *.md               #   e.g. geraldnorby-com.md, vps.md
 ├── skills/
 │   └── task_manager.md     # Claude Code skill for task management
 ├── services/
