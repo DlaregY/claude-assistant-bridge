@@ -157,6 +157,18 @@ def run_claude(message: str) -> str:
 
     notes = load_skill("notes.md")
 
+    system_context += (
+        f"## Notes Instructions\n\n"
+        f"You have read/write access to notes.md at {os.path.join(os.path.dirname(__file__), 'notes.md')}. "
+        f"Automatically update it when you learn any of the following:\n"
+        f"- File paths to projects, websites, or important directories\n"
+        f"- Account details, usernames, or service names (never passwords or tokens)\n"
+        f"- Preferences or recurring instructions Gerald gives you\n"
+        f"- Decisions made about ongoing projects\n"
+        f"- Anything Gerald explicitly asks you to remember\n\n"
+        f"Do NOT note: one-off tasks, general knowledge, or anything already in notes.md.\n\n"
+    )
+
     system_context = (
         f"You are a personal AI assistant for {USER_NAME}. "
         f"Current time: {datetime.now().strftime('%Y-%m-%d %H:%M')} ({TIMEZONE}). "
