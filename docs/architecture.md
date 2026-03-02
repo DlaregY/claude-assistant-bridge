@@ -159,3 +159,5 @@ Task: [prompt from tasks.json]
 **Single user.** The system is designed for one person. Multi-user support would require replacing the single `TELEGRAM_ALLOWED_USER_ID` with a whitelist and routing responses back to the correct chat ID.
 
 **Sequential task execution.** The runner processes tasks one at a time. If a task takes 2 minutes and three tasks are due simultaneously, they queue. For personal use this is rarely a problem. A parallel execution model would require more complex concurrency management.
+
+**OAuth token expiry on VPS.** Claude Code uses OAuth tokens that expire every few hours. On Windows, the desktop app refreshes tokens automatically. On a Linux VPS there is no desktop session, so tokens expire and must be renewed manually or via automation. The recommended solution is a scheduled task on a Windows CAB instance that copies fresh credentials to the VPS every 2 hours via SCP. See `docs/setup-linux-vps.md` for details.

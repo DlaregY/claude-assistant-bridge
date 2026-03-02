@@ -282,6 +282,31 @@ su - claude -c "python3 /home/claude/claude-assistant-bridge/runner.py"
 
 ---
 
+## Credentials Renewal
+
+Claude Code uses OAuth tokens that expire every few hours. When a token expires, your VPS bot will respond with a 401 authentication error. The fix is to copy fresh credentials from your local machine to the VPS.
+
+**Manual fix (when it breaks):**
+
+On your Windows machine:
+
+```cmd
+scp %USERPROFILE%\.claude\.credentials.json root@YOUR_SERVER_IP:/home/claude/.claude/.credentials.json
+ssh root@YOUR_SERVER_IP "chown claude:claude /home/claude/.claude/.credentials.json"
+```
+
+Claude Code reads credentials fresh on each invocation — no service restart needed.
+
+**Automated fix (recommended):**
+
+If you're also running CAB on Windows, use your Windows bot to schedule automatic renewal. Send this message to your Windows bot:
+
+> "Add a task: every 2 hours copy my Claude credentials to the VPS. Run: scp C:/Users/YOUR_USERNAME/.claude/.credentials.json root@YOUR_SERVER_IP:/home/claude/.claude/.credentials.json && ssh root@YOUR_SERVER_IP 'chown claude:claude /home/claude/.claude/.credentials.json'"
+
+This keeps the VPS credentials fresh automatically as long as your Windows machine is on. No restart needed — Claude Code picks up the updated credentials on its next invocation.
+
+---
+
 ## Notes
 
 **No cloudflared needed.** With a static IP and a real domain, Caddy handles HTTPS directly. Cloudflared is unnecessary on a VPS.
