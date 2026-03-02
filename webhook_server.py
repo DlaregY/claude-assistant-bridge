@@ -170,7 +170,7 @@ def run_claude(message: str) -> str:
 
     result = subprocess.run(
         [CLAUDE_EXE, "-p", system_context, "--dangerously-skip-permissions"],
-        capture_output=True, text=True, timeout=120,
+        capture_output=True, text=True, timeout=300,
         encoding="utf-8", errors="replace"
     )
     return result.stdout.strip() or result.stderr.strip() or "No response from Claude."
