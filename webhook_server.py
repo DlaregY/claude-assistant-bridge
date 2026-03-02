@@ -155,6 +155,8 @@ def run_claude(message: str) -> str:
     """Invoke Claude Code with the user message and system context."""
     task_manager_skill = load_skill("skills/task_manager.md")
 
+    notes = load_skill("notes.md")
+
     system_context = (
         f"You are a personal AI assistant for {USER_NAME}. "
         f"Current time: {datetime.now().strftime('%Y-%m-%d %H:%M')} ({TIMEZONE}). "
@@ -162,6 +164,9 @@ def run_claude(message: str) -> str:
         f"Run log: {RUN_LOG_FILE}. "
         f"Keep responses concise — this is a messaging interface.\n\n"
     )
+
+    if notes:
+        system_context += f"## Notes\n\n{notes}\n\n"
 
     if task_manager_skill:
         system_context += f"## Task Management Skill\n\n{task_manager_skill}\n\n"
