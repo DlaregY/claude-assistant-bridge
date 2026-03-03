@@ -212,6 +212,9 @@ __marimo__/
 .env
 CLAUDE.md
 
+# Claude Code local settings
+.claude/
+
 # Runtime data — personal, changes constantly
 tasks.json
 run_log.jsonl
