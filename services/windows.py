@@ -45,6 +45,34 @@ def get_current_username() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Power / battery fix
+# ---------------------------------------------------------------------------
+
+def _fix_power_settings(task_name: str) -> None:
+    """
+    Allow a scheduled task to start on battery and not stop when switching
+    to battery. The schtasks CLI doesn't expose these settings, so we
+    shell out to PowerShell.
+    """
+    ps_script = (
+        f"$s = New-ScheduledTaskSettingsSet"
+        f" -AllowStartIfOnBatteries"
+        f" -DontStopIfGoingOnBatteries"
+        f" -ExecutionTimeLimit (New-TimeSpan -Hours 72);"
+        f" Set-ScheduledTask -TaskName '{task_name}' -Settings $s"
+    )
+    result = subprocess.run(
+        ["powershell", "-ExecutionPolicy", "Bypass", "-Command", ps_script],
+        capture_output=True, text=True
+    )
+    if result.returncode == 0:
+        print(f"    ✅ Power settings fixed (runs on battery)")
+    else:
+        print(f"    ⚠️  Could not fix power settings: {result.stderr.strip()}")
+        print(f"       You may need to manually allow battery operation in Task Scheduler.")
+
+
+# ---------------------------------------------------------------------------
 # Individual service registrations
 # ---------------------------------------------------------------------------
 
@@ -124,6 +152,10 @@ def install_webhook_server(project_dir: str, username: str, password: str = None
     if not ok:
         return False
 
+    # Fix battery/power settings — schtasks CLI doesn't expose these,
+    # so use PowerShell to allow start on battery and prevent stopping
+    _fix_power_settings("Claude Assistant Bridge")
+
     ok = run(
         ["schtasks", "/run", "/tn", "Claude Assistant Bridge"],
         "Starting webhook server now"
@@ -159,6 +191,10 @@ def install_runner(project_dir: str, username: str, interval_minutes: int = 5) -
         ],
         f"Creating Task Scheduler entry (every {interval_minutes} minutes, runs as {username})"
     )
+
+    if ok:
+        _fix_power_settings("Claude Assistant Bridge Runner")
+
     return ok
 
 
