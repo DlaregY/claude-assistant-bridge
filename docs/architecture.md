@@ -43,6 +43,8 @@ Cloudflare Tunnel (`cloudflared`) solves all three problems in one command. It c
 
 The tunnel URL changes on restart in quick tunnel mode. This is handled by the webhook server's startup routine, which polls cloudflared's local API (`localhost:20241/quicktunnel`) to detect the current URL and re-registers it with Telegram automatically. The user never has to update any configuration.
 
+Quick tunnels can also go stale without warning — the hostname stops resolving while cloudflared still appears to be running. To handle this, the webhook server runs a background health monitor that checks the tunnel every 2 minutes. If the tunnel is unreachable (DNS failure, 530 error, or timeout), the monitor automatically restarts the cloudflared Windows service, detects the new tunnel URL, and re-registers the Telegram webhook. This self-healing loop means stale tunnels are recovered without user intervention, typically within 2-3 minutes.
+
 On a Linux VPS with a static IP, Cloudflare Tunnel is optional — you can point Telegram's webhook directly at your server's IP with a real domain and a Let's Encrypt certificate. The setup guide covers both approaches.
 
 ---

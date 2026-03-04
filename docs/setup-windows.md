@@ -297,7 +297,7 @@ If entries show `status: skipped` with `catch_up=false`, the task missed its win
 
 ## Notes
 
-**The tunnel URL changes on restart.** Cloudflared's free quick tunnel generates a new URL each time cloudflared restarts. CAB handles this automatically — the webhook server detects the new URL and re-registers with Telegram on startup. No manual intervention needed.
+**The tunnel URL changes on restart.** Cloudflared's free quick tunnel generates a new URL each time cloudflared restarts. CAB handles this automatically — the webhook server detects the new URL and re-registers with Telegram on startup. A background health monitor also checks the tunnel every 2 minutes and restarts cloudflared if the tunnel goes stale, re-registering the webhook automatically. No manual intervention needed.
 
 **Your PC must be on for tasks to execute.** If the PC is off at a scheduled task time, CAB uses catch-up logic to run the task when the PC wakes up, within the configured window. Tasks with `catch_up: false` are skipped entirely if missed.
 

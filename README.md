@@ -118,7 +118,7 @@ claude-assistant-bridge/
 ├── runner.py               # Scheduled task runner
 ├── notes.md                # Auto-maintained general context (gitignored)
 ├── context/                # Per-project context files (gitignored)
-│   └── *.md               #   e.g. geraldnorby-com.md, vps.md
+│   └── *.md               #   e.g. myproject.md, vps.md
 ├── skills/
 │   └── task_manager.md     # Claude Code skill for task management
 ├── services/

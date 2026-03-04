@@ -7,6 +7,7 @@ Runs as a persistent service (Windows: Task Scheduler, Linux: systemd).
 import os
 import glob
 import time
+import asyncio
 import platform
 import subprocess
 import requests
@@ -100,7 +101,12 @@ from contextlib import asynccontextmanager
 @asynccontextmanager
 async def lifespan(app):
     await startup()
+    # Start tunnel health monitor for quick tunnels (not static URLs)
+    if not os.getenv("CLOUDFLARE_TUNNEL_URL", ""):
+        health_task = asyncio.create_task(_tunnel_health_loop())
     yield
+    if not os.getenv("CLOUDFLARE_TUNNEL_URL", ""):
+        health_task.cancel()
 
 app = FastAPI(lifespan=lifespan)
 
@@ -121,6 +127,88 @@ def get_tunnel_url(retries=10, delay=3) -> str:
     logging.warning(f"Could not detect tunnel URL, using fallback: {fallback}")
     print(f"Using fallback tunnel URL from .env: {fallback}")
     return fallback
+
+
+# ---------------------------------------------------------------------------
+# Tunnel health monitor
+# ---------------------------------------------------------------------------
+
+TUNNEL_CHECK_INTERVAL = 120  # seconds between health checks
+TUNNEL_SERVICE_NAME = "cloudflared-tunnel"
+
+# Current tunnel URL — updated by startup and health monitor
+_current_tunnel_url: str = ""
+
+
+def _restart_cloudflared() -> bool:
+    """Restart the cloudflared Windows service via PowerShell (needs elevation)."""
+    logging.info("Restarting cloudflared service...")
+    try:
+        result = subprocess.run(
+            ["powershell", "-Command",
+             f"Restart-Service {TUNNEL_SERVICE_NAME}"],
+            capture_output=True, text=True, timeout=30
+        )
+        if result.returncode == 0:
+            logging.info("cloudflared service restarted successfully")
+            return True
+        # Try elevated restart if direct restart fails (access denied)
+        result = subprocess.run(
+            ["powershell", "-Command",
+             f"Start-Process powershell -ArgumentList '-Command','Restart-Service {TUNNEL_SERVICE_NAME}' -Verb RunAs -Wait"],
+            capture_output=True, text=True, timeout=30
+        )
+        if result.returncode == 0:
+            logging.info("cloudflared service restarted via elevation")
+            return True
+        logging.error(f"Failed to restart cloudflared: {result.stderr.strip()}")
+        return False
+    except Exception as e:
+        logging.error(f"Exception restarting cloudflared: {e}")
+        return False
+
+
+def _check_tunnel_health(tunnel_url: str) -> bool:
+    """Verify the tunnel hostname resolves and responds."""
+    try:
+        resp = requests.head(tunnel_url, timeout=10, allow_redirects=True)
+        return resp.status_code < 530  # 530 = Cloudflare origin error
+    except Exception:
+        return False
+
+
+async def _tunnel_health_loop():
+    """Background loop that monitors tunnel health and self-heals."""
+    global _current_tunnel_url
+    # Let the server finish starting up
+    await asyncio.sleep(TUNNEL_CHECK_INTERVAL)
+
+    while True:
+        try:
+            if _current_tunnel_url and not _current_tunnel_url.startswith("https://"):
+                await asyncio.sleep(TUNNEL_CHECK_INTERVAL)
+                continue
+
+            healthy = await asyncio.to_thread(_check_tunnel_health, _current_tunnel_url)
+            if not healthy:
+                logging.warning(f"Tunnel unhealthy ({_current_tunnel_url}), restarting cloudflared...")
+                await asyncio.to_thread(_restart_cloudflared)
+                # Wait for cloudflared to come back up
+                await asyncio.sleep(15)
+                new_url = await asyncio.to_thread(get_tunnel_url, 15, 3)
+                if new_url and new_url != _current_tunnel_url:
+                    logging.info(f"Tunnel URL changed: {_current_tunnel_url} -> {new_url}")
+                    _current_tunnel_url = new_url
+                    await asyncio.to_thread(register_webhook, new_url)
+                elif new_url:
+                    # Same URL, just re-register to be safe
+                    await asyncio.to_thread(register_webhook, new_url)
+                else:
+                    logging.error("Could not detect new tunnel URL after restart")
+        except Exception as e:
+            logging.error(f"Tunnel health check error: {e}")
+
+        await asyncio.sleep(TUNNEL_CHECK_INTERVAL)
 
 
 def send_telegram(chat_id: int, text: str):
@@ -256,6 +344,7 @@ async def webhook(request: Request):
 # ---------------------------------------------------------------------------
 
 async def startup():
+    global _current_tunnel_url
     print(f"Platform: {platform.system()}")
     print(f"Claude executable: {CLAUDE_EXE}")
     static_url = os.getenv("CLOUDFLARE_TUNNEL_URL", "")
@@ -266,6 +355,7 @@ async def startup():
         print("Waiting 30 seconds for network to initialize...")
         time.sleep(30)
         tunnel_url = get_tunnel_url()
+    _current_tunnel_url = tunnel_url
     for attempt in range(20):
         try:
             register_webhook(tunnel_url)
@@ -274,6 +364,8 @@ async def startup():
             print(f"Webhook registration attempt {attempt+1} failed: {e}, retrying in 8s...")
             time.sleep(8)
     print(f"Claude Assistant Bridge running on port {PORT}")
+    if not static_url:
+        print(f"Tunnel health monitor active (checking every {TUNNEL_CHECK_INTERVAL}s)")
 
 
 if __name__ == "__main__":
