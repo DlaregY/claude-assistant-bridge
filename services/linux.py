@@ -127,17 +127,23 @@ def install_webhook_service(project_dir: str, logs_dir: str) -> bool:
 # ---------------------------------------------------------------------------
 
 def install_runner_cron(project_dir: str, interval_minutes: int = 5) -> bool:
-    """Add a cron entry to run runner.py every N minutes."""
+    """Add a cron entry to run runner.py every N minutes under the claude user."""
     print("\n[2/2] Installing task runner as a cron job...")
 
-    python_exe = sys.executable
+    python_exe = "/usr/bin/python3"
     runner_path = os.path.join(project_dir, "runner.py")
     log_path = os.path.join(project_dir, "logs", "runner.log")
     cron_comment = "# Claude Assistant Bridge — task runner"
     cron_line = f"*/{interval_minutes} * * * * {python_exe} {runner_path} >> {log_path} 2>&1"
 
-    # Read existing crontab
-    result = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
+    # Always install under the 'claude' user, even when this script runs as root.
+    # Claude Code refuses --dangerously-skip-permissions under root.
+    cron_user = "claude"
+    use_sudo = getpass.getuser() != cron_user
+
+    # Read existing crontab for the target user
+    read_cmd = ["crontab", "-u", cron_user, "-l"] if use_sudo else ["crontab", "-l"]
+    result = subprocess.run(read_cmd, capture_output=True, text=True)
     existing = result.stdout if result.returncode == 0 else ""
 
     # Remove any existing CAB runner entries
@@ -153,13 +159,14 @@ def install_runner_cron(project_dir: str, interval_minutes: int = 5) -> bool:
     lines.append(cron_line)
     new_crontab = "\n".join(lines) + "\n"
 
-    # Install
+    # Install under the target user
+    install_cmd = ["crontab", "-u", cron_user, "-"] if use_sudo else ["crontab", "-"]
     proc = subprocess.run(
-        ["crontab", "-"],
+        install_cmd,
         input=new_crontab, capture_output=True, text=True
     )
     if proc.returncode == 0:
-        print(f"    ✅ Cron job added (every {interval_minutes} minutes)")
+        print(f"    ✅ Cron job added for user '{cron_user}' (every {interval_minutes} minutes)")
         return True
     else:
         print(f"    ❌ Failed: {proc.stderr.strip()}")

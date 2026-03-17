@@ -202,7 +202,9 @@ python3 services/linux.py
 
 This installs:
 - A `systemd` service that starts the webhook server on boot
-- A `cron` job that runs the task runner every 5 minutes
+- A `cron` job under the `claude` user that runs the task runner every 5 minutes
+
+> **Important:** The cron job is always installed under the `claude` user, even when this script runs as root. Claude Code refuses `--dangerously-skip-permissions` under root, so the runner **must** run as `claude`.
 
 Verify the service is running:
 

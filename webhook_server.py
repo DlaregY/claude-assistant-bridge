@@ -10,9 +10,9 @@ import time
 import asyncio
 import platform
 import subprocess
+import importlib.util
 import requests
 import logging
-import importlib.util
 from datetime import datetime
 from fastapi import FastAPI, Request
 from dotenv import load_dotenv
@@ -38,7 +38,6 @@ RUN_LOG_FILE = os.getenv("RUN_LOG_FILE")
 LOGS_DIR = os.getenv("LOGS_DIR")
 USER_NAME = os.getenv("USER_DISPLAY_NAME", "User")
 TIMEZONE = os.getenv("TIMEZONE", "America/Chicago")
-BOT_HANDLERS = os.getenv("BOT_HANDLERS", "")  # comma-separated handler module paths
 
 # ---------------------------------------------------------------------------
 # Claude executable resolution
@@ -83,16 +82,16 @@ def _resolve_claude_exe() -> str:
 
 CLAUDE_EXE = _resolve_claude_exe()
 
-
 # ---------------------------------------------------------------------------
-# Handler plugin system
+# Bot handler plugins
 # ---------------------------------------------------------------------------
 
 _handlers = []
 
-def load_handlers():
-    """Load bot handler plugins specified in BOT_HANDLERS env var."""
-    if not BOT_HANDLERS:
+def load_handlers(app_instance):
+    """Load bot handler plugins from BOT_HANDLERS env var (comma-separated file paths)."""
+    paths = os.getenv("BOT_HANDLERS", "")
+    if not paths:
         return
     config = {
         "claude_exe": CLAUDE_EXE,
@@ -100,22 +99,25 @@ def load_handlers():
         "timezone": TIMEZONE,
         "allowed_user_id": ALLOWED_USER_ID,
         "logs_dir": LOGS_DIR,
-        "base_dir": os.path.dirname(__file__),
+        "base_dir": os.path.dirname(os.path.abspath(__file__)),
     }
-    for path in BOT_HANDLERS.split(","):
+    for path in paths.split(","):
         path = path.strip()
-        if not path:
+        if not path or not os.path.isfile(path):
+            logging.warning(f"Handler not found: {path}")
             continue
         try:
             spec = importlib.util.spec_from_file_location("handler", path)
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
-            if hasattr(mod, "setup"):
-                mod.setup(app, config)
-                logging.info(f"Loaded handler: {path}")
-            _handlers.append(mod)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            if hasattr(module, "setup"):
+                module.setup(app_instance, config)
+            _handlers.append(module)
+            logging.info(f"Loaded handler: {path}")
+            print(f"Loaded handler: {path}")
         except Exception as e:
             logging.error(f"Failed to load handler {path}: {e}")
+            print(f"Failed to load handler {path}: {e}")
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -255,8 +257,7 @@ def send_telegram(chat_id: int, text: str):
 
 
 def register_webhook(tunnel_url: str):
-    """Register webhook URLs with Telegram for all bots. Raises on failure."""
-    # Main CAB bot
+    """Register webhook URLs with Telegram for CAB and all loaded handlers."""
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook"
     webhook_url = f"{tunnel_url}/webhook"
     resp = requests.post(url, json={"url": webhook_url})
@@ -266,13 +267,13 @@ def register_webhook(tunnel_url: str):
     if not result.get("ok"):
         raise Exception(f"Telegram rejected CAB webhook: {result.get('description')}")
 
-    # Handler webhooks
     for handler in _handlers:
         if hasattr(handler, "register_webhooks"):
             try:
                 handler.register_webhooks(tunnel_url)
             except Exception as e:
                 logging.error(f"Handler webhook registration failed: {e}")
+                print(f"Handler webhook registration failed: {e}")
 
 
 def load_skill(skill_path: str) -> str:
@@ -392,7 +393,7 @@ async def startup():
     global _current_tunnel_url
     print(f"Platform: {platform.system()}")
     print(f"Claude executable: {CLAUDE_EXE}")
-    load_handlers()
+    load_handlers(app)
     static_url = os.getenv("CLOUDFLARE_TUNNEL_URL", "")
     if static_url:
         print(f"Using static URL: {static_url}")
