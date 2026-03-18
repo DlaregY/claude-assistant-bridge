@@ -29,7 +29,7 @@ Telegram was chosen over WhatsApp, Signal, iMessage, and Discord for four concre
 
 **Zero approval process.** Creating a Telegram bot takes two minutes via BotFather. WhatsApp requires Meta business account verification. iMessage has no third-party API.
 
-**Simple authentication.** Your numeric user ID is hardcoded as the whitelist. Any message from a different ID is silently ignored. There's no session management, no OAuth flow, no tokens beyond the bot token itself.
+**Simple authentication.** Your numeric user ID is hardcoded as the whitelist. Any message from a different ID is silently ignored. There's no OAuth flow and no tokens beyond the bot token itself.
 
 **Free and stable.** Telegram's Bot API has been stable for years, has no rate limits that matter for personal use, and costs nothing.
 
@@ -86,6 +86,20 @@ The log being append-only is a deliberate constraint. It means the runner's reco
 
 ---
 
+## Webhook Reliability
+
+Telegram retries webhook deliveries when the server doesn't respond within ~60 seconds. Since Claude Code invocations can take minutes, naive request handling leads to a cascade of retries — each spawning a duplicate Claude process and flooding the user with duplicate responses.
+
+The webhook server defends against this with three layers:
+
+1. **Immediate response.** The webhook handler returns HTTP 200 instantly and dispatches message processing to a background `asyncio` task. Telegram sees a fast response and never retries.
+
+2. **Update ID deduplication.** Every Telegram update has a unique `update_id`. The server tracks recently seen IDs (10-minute TTL) and silently drops duplicates. This catches any retries that arrive before the immediate response or during transient issues.
+
+3. **Per-chat locking.** An `asyncio.Lock` per chat ID serializes message processing. If two messages arrive for the same chat in quick succession, the second waits for the first to finish. This prevents concurrent Claude Code processes from corrupting the session state.
+
+---
+
 ## Why JSONL for the Run Log
 
 The run log uses newline-delimited JSON (JSONL) rather than a database or a plain log file.
@@ -124,7 +138,7 @@ This means the same `webhook_server.py` and `runner.py` files run unchanged on b
 
 ## What Claude Code Receives
 
-Every invocation passes a system context string followed by the user's message or task prompt. For interactive messages:
+Every invocation passes the user's message as a positional argument and appends a system prompt with context. For interactive messages, the system prompt includes:
 
 ```
 You are a personal AI assistant for [NAME].
@@ -148,9 +162,9 @@ Keep responses concise — this is a messaging interface.
 ## Task Management Skill
 
 [contents of skills/task_manager.md]
-
-User message: [message text]
 ```
+
+The system prompt is passed via `--append-system-prompt`, and the user's message is passed as the positional `prompt` argument. On the first message, `--session-id <uuid>` creates a persistent session. Subsequent messages use `--resume <uuid>` to continue the conversation with full history. Sessions auto-expire after 6 hours of inactivity (configurable via `SESSION_TIMEOUT_HOURS`), and the user can send `/new` to start a fresh conversation at any time.
 
 The skill file and context files are injected inline so Claude Code has complete context without needing to discover it. The assistant auto-maintains `notes.md` (general preferences) and `context/<project-name>.md` files (per-project details) as it learns new information during conversations.
 

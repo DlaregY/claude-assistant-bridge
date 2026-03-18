@@ -6,10 +6,13 @@ Runs as a persistent service (Windows: Task Scheduler, Linux: systemd).
 
 import os
 import glob
+import json
 import time
+import uuid
 import asyncio
 import platform
 import subprocess
+import threading
 import importlib.util
 import requests
 import logging
@@ -81,6 +84,86 @@ def _resolve_claude_exe() -> str:
 
 
 CLAUDE_EXE = _resolve_claude_exe()
+
+# ---------------------------------------------------------------------------
+# Conversation sessions
+# ---------------------------------------------------------------------------
+
+SESSIONS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sessions.json")
+SESSION_TIMEOUT_HOURS = int(os.getenv("SESSION_TIMEOUT_HOURS", 6))
+_sessions_lock = threading.Lock()
+_chat_locks: dict[int, asyncio.Lock] = {}
+
+
+def _get_chat_lock(chat_id: int) -> asyncio.Lock:
+    """Get or create an asyncio lock for a specific chat to serialize messages."""
+    if chat_id not in _chat_locks:
+        _chat_locks[chat_id] = asyncio.Lock()
+    return _chat_locks[chat_id]
+
+
+def _load_sessions() -> dict:
+    """Load session mappings from disk."""
+    with _sessions_lock:
+        if os.path.exists(SESSIONS_FILE):
+            try:
+                with open(SESSIONS_FILE, "r") as f:
+                    return json.load(f)
+            except (json.JSONDecodeError, IOError):
+                return {}
+        return {}
+
+
+def _save_sessions(sessions: dict):
+    """Persist session mappings to disk."""
+    with _sessions_lock:
+        with open(SESSIONS_FILE, "w") as f:
+            json.dump(sessions, f, indent=2)
+
+
+def _get_session(chat_id: int) -> tuple:
+    """
+    Get or create a session for a chat.
+    Returns (session_id, is_new).
+    Auto-resets if inactive longer than SESSION_TIMEOUT_HOURS.
+    """
+    sessions = _load_sessions()
+    key = str(chat_id)
+    now = datetime.now()
+
+    if key in sessions:
+        last_used = datetime.fromisoformat(sessions[key]["last_used"])
+        hours_inactive = (now - last_used).total_seconds() / 3600
+        if hours_inactive < SESSION_TIMEOUT_HOURS:
+            sessions[key]["last_used"] = now.isoformat()
+            _save_sessions(sessions)
+            return sessions[key]["session_id"], False
+
+    # New session (first message or timed out)
+    session_id = str(uuid.uuid4())
+    sessions[key] = {
+        "session_id": session_id,
+        "created": now.isoformat(),
+        "last_used": now.isoformat(),
+    }
+    _save_sessions(sessions)
+    return session_id, True
+
+
+def _reset_session(chat_id: int) -> str:
+    """Force-create a new session for a chat. Returns the new session ID."""
+    sessions = _load_sessions()
+    key = str(chat_id)
+    session_id = str(uuid.uuid4())
+    now = datetime.now()
+    sessions[key] = {
+        "session_id": session_id,
+        "created": now.isoformat(),
+        "last_used": now.isoformat(),
+    }
+    _save_sessions(sessions)
+    return session_id
+
 
 # ---------------------------------------------------------------------------
 # Bot handler plugins
@@ -300,8 +383,8 @@ def load_context_files() -> str:
     return "\n\n".join(parts)
 
 
-def run_claude(message: str) -> str:
-    """Invoke Claude Code with the user message and system context."""
+def _build_system_prompt() -> str:
+    """Build the system prompt with current context, notes, and skills."""
     task_manager_skill = load_skill("skills/task_manager.md")
     notes = load_skill("notes.md")
     project_context = load_context_files()
@@ -339,23 +422,69 @@ def run_claude(message: str) -> str:
     if task_manager_skill:
         system_context += f"## Task Management Skill\n\n{task_manager_skill}\n\n"
 
-    system_context += f"User message: {message}"
+    return system_context
+
+
+def run_claude(message: str, session_id: str = None, is_resume: bool = False) -> tuple:
+    """
+    Invoke Claude Code with the user message and system context.
+    Returns (response_text, success).
+    """
+    system_prompt = _build_system_prompt()
+
+    cmd = [CLAUDE_EXE, "-p", "--dangerously-skip-permissions"]
+    cmd.extend(["--append-system-prompt", system_prompt])
+
+    if session_id:
+        if is_resume:
+            cmd.extend(["--resume", session_id])
+        else:
+            cmd.extend(["--session-id", session_id])
+
+    cmd.append(message)
 
     result = subprocess.run(
-        [CLAUDE_EXE, "-p", system_context, "--dangerously-skip-permissions"],
-        capture_output=True, text=True, timeout=300,
+        cmd, capture_output=True, text=True, timeout=300,
         encoding="utf-8", errors="replace"
     )
-    return result.stdout.strip() or result.stderr.strip() or "No response from Claude."
+    output = result.stdout.strip() or result.stderr.strip() or "No response from Claude."
+    stderr = result.stderr.strip().lower()
+    # Detect session/resume errors from stderr (not stdout, which is content)
+    is_session_error = result.returncode != 0 and any(
+        kw in stderr for kw in ["session", "resume", "not found", "invalid"]
+    )
+    return output, result.returncode == 0, is_session_error
 
 
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
 
+# Deduplication: track recently seen update IDs to ignore Telegram retries
+_seen_updates: dict[int, float] = {}
+_SEEN_TTL = 600  # keep IDs for 10 minutes
+
+def _prune_seen_updates():
+    """Remove expired entries from the seen-updates cache."""
+    cutoff = time.time() - _SEEN_TTL
+    expired = [uid for uid, ts in _seen_updates.items() if ts < cutoff]
+    for uid in expired:
+        del _seen_updates[uid]
+
+
 @app.post("/webhook")
 async def webhook(request: Request):
     data = await request.json()
+
+    # --- Deduplication: ignore Telegram retries ---
+    update_id = data.get("update_id")
+    if update_id:
+        _prune_seen_updates()
+        if update_id in _seen_updates:
+            logging.info(f"Ignoring duplicate update {update_id}")
+            return {"ok": True}
+        _seen_updates[update_id] = time.time()
+
     chat_id = None
     try:
         message = data["message"]
@@ -370,19 +499,67 @@ async def webhook(request: Request):
         if not text:
             return {"ok": True}
 
-        logging.info(f"Received: {text}")
-        send_telegram(chat_id, "⏳ Working on it...")
+        # /new — start a fresh conversation
+        if text.strip().lower() == "/new":
+            _reset_session(chat_id)
+            send_telegram(chat_id, "🔄 Started a fresh conversation.")
+            return {"ok": True}
 
-        response = run_claude(text)
-        send_telegram(chat_id, response)
-        logging.info("Responded successfully")
+        logging.info(f"Received: {text}")
+
+        # Respond to Telegram immediately, process in background.
+        # This prevents Telegram from retrying the webhook when Claude
+        # Code takes longer than Telegram's ~60s webhook timeout.
+        asyncio.create_task(_process_message(chat_id, text))
 
     except Exception as e:
-        logging.error(f"Error: {e}")
-        if chat_id:
-            send_telegram(chat_id, f"❌ Error: {str(e)}")
+        logging.error(f"Webhook parse error: {e}")
 
     return {"ok": True}
+
+
+async def _process_message(chat_id: int, text: str):
+    """Process a user message in the background (after webhook has returned)."""
+    try:
+        # Serialize messages per chat to prevent concurrent session access
+        lock = _get_chat_lock(chat_id)
+        async with lock:
+            send_telegram(chat_id, "⏳ Working on it...")
+
+            session_id, is_new = _get_session(chat_id)
+            logging.info(f"Session: {session_id} ({'new' if is_new else 'resumed'})")
+
+            try:
+                response, success, session_error = await asyncio.to_thread(
+                    run_claude, text, session_id, is_resume=not is_new
+                )
+            except subprocess.TimeoutExpired:
+                logging.error(f"Claude Code timed out for session {session_id}")
+                send_telegram(chat_id, "❌ Claude Code timed out. Try again or send /new to start fresh.")
+                return
+
+            # Only reset session for actual session/resume errors (detected via stderr)
+            if session_error and not is_new:
+                logging.warning(f"Resume failed for session {session_id}, starting new session")
+                session_id = _reset_session(chat_id)
+                try:
+                    response, success, _ = await asyncio.to_thread(
+                        run_claude, text, session_id, is_resume=False
+                    )
+                except subprocess.TimeoutExpired:
+                    send_telegram(chat_id, "❌ Claude Code timed out. Try again or send /new to start fresh.")
+                    return
+                send_telegram(chat_id, "⚠️ Previous conversation couldn't be resumed — started fresh.")
+
+            send_telegram(chat_id, response)
+            logging.info("Responded successfully")
+
+    except Exception as e:
+        logging.error(f"Processing error: {e}")
+        try:
+            send_telegram(chat_id, f"❌ Error: {type(e).__name__}: {str(e)[:200]}")
+        except Exception:
+            logging.error(f"Failed to send error message to {chat_id}")
 
 
 # ---------------------------------------------------------------------------

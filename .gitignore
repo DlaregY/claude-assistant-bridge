@@ -218,6 +218,7 @@ CLAUDE.md
 # Runtime data — personal, changes constantly
 tasks.json
 run_log.jsonl
+sessions.json
 notes.md
 context/
 

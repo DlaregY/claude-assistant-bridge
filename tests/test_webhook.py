@@ -7,6 +7,7 @@ Run: python -m pytest tests/ -v
 import os
 import sys
 import json
+import time
 from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
@@ -25,6 +26,8 @@ os.environ.setdefault("LOGS_DIR", "/tmp/cab_logs")
 os.environ.setdefault("USER_DISPLAY_NAME", "TestUser")
 os.environ.setdefault("TIMEZONE", "America/Chicago")
 os.environ.setdefault("CLAUDE_EXE", "echo")  # Use echo as a safe no-op
+# Force-set (not setdefault) — .env may have set it to empty string
+os.environ["CLOUDFLARE_TUNNEL_URL"] = "https://test.trycloudflare.com"
 
 import webhook_server
 from webhook_server import app, ALLOWED_USER_ID
@@ -34,16 +37,28 @@ from webhook_server import app, ALLOWED_USER_ID
 # Test client
 # ---------------------------------------------------------------------------
 
+_update_counter = 1000
+
+
 @pytest.fixture
 def client():
-    """FastAPI test client with mocked send_telegram and run_claude."""
-    with TestClient(app, raise_server_exceptions=False) as c:
-        yield c
+    """FastAPI test client with mocked startup networking."""
+    # Clear dedup cache between tests so each test starts fresh
+    webhook_server._seen_updates.clear()
+    with patch("webhook_server.register_webhook"):
+        with TestClient(app, raise_server_exceptions=False) as c:
+            yield c
 
 
-def telegram_message(text: str, user_id: int = ALLOWED_USER_ID, chat_id: int = 12345):
-    """Build a minimal Telegram webhook payload."""
+def telegram_message(text: str, user_id: int = ALLOWED_USER_ID,
+                     chat_id: int = 12345, update_id: int = None):
+    """Build a minimal Telegram webhook payload with a unique update_id."""
+    global _update_counter
+    if update_id is None:
+        _update_counter += 1
+        update_id = _update_counter
     return {
+        "update_id": update_id,
         "message": {
             "message_id": 1,
             "from": {
@@ -70,10 +85,13 @@ class TestAuthentication:
     def test_authorized_user_gets_response(self, client):
         """Messages from the whitelisted user ID should be processed."""
         with patch("webhook_server.send_telegram") as mock_send, \
-             patch("webhook_server.run_claude", return_value="Hello there!"):
+             patch("webhook_server.run_claude", return_value=("Hello there!", True, False)), \
+             patch("webhook_server._get_session", return_value=("test-session", True)):
             response = client.post("/webhook", json=telegram_message("hi"))
             assert response.status_code == 200
             assert response.json() == {"ok": True}
+            # Give background task time to complete
+            time.sleep(0.5)
             # Should have sent the working indicator and the response
             assert mock_send.call_count == 2
 
@@ -121,8 +139,10 @@ class TestMessageRouting:
             call_order.append(text)
 
         with patch("webhook_server.send_telegram", side_effect=mock_send), \
-             patch("webhook_server.run_claude", return_value="Done!"):
+             patch("webhook_server.run_claude", return_value=("Done!", True, False)), \
+             patch("webhook_server._get_session", return_value=("test-session", True)):
             client.post("/webhook", json=telegram_message("do something"))
+            time.sleep(0.5)
 
         assert len(call_order) == 2
         assert "⏳" in call_order[0]
@@ -136,16 +156,20 @@ class TestMessageRouting:
             sent_to.append(chat_id)
 
         with patch("webhook_server.send_telegram", side_effect=mock_send), \
-             patch("webhook_server.run_claude", return_value="OK"):
+             patch("webhook_server.run_claude", return_value=("OK", True, False)), \
+             patch("webhook_server._get_session", return_value=("test-session", True)):
             client.post("/webhook", json=telegram_message("hello", chat_id=99999))
+            time.sleep(0.5)
 
         assert all(cid == 99999 for cid in sent_to)
 
     def test_claude_error_sends_error_message(self, client):
         """If Claude Code raises an exception, an error message should be sent."""
         with patch("webhook_server.send_telegram") as mock_send, \
-             patch("webhook_server.run_claude", side_effect=Exception("timeout")):
+             patch("webhook_server.run_claude", side_effect=Exception("timeout")), \
+             patch("webhook_server._get_session", return_value=("test-session", True)):
             client.post("/webhook", json=telegram_message("do something"))
+            time.sleep(0.5)
 
         # Should still send something back (the error message)
         assert mock_send.called
@@ -170,6 +194,39 @@ class TestMessageRouting:
         assert len(sent_chunks) == 3
         assert all(len(chunk) <= 4000 for chunk in sent_chunks)
         assert "".join(sent_chunks) == long_response
+
+
+# ---------------------------------------------------------------------------
+# Deduplication tests
+# ---------------------------------------------------------------------------
+
+class TestDeduplication:
+
+    def test_duplicate_update_id_is_ignored(self, client):
+        """Telegram retries with the same update_id should be dropped."""
+        with patch("webhook_server.send_telegram") as mock_send, \
+             patch("webhook_server.run_claude", return_value=("OK", True, False)), \
+             patch("webhook_server._get_session", return_value=("test-session", True)):
+            msg = telegram_message("hello", update_id=42)
+            client.post("/webhook", json=msg)
+            time.sleep(0.3)
+            # Same update_id again (Telegram retry)
+            client.post("/webhook", json=msg)
+            time.sleep(0.3)
+
+        # run_claude called once → working indicator + response = 2 sends
+        assert mock_send.call_count == 2
+
+    def test_new_command_resets_session(self, client):
+        """/new command should reset the session and respond."""
+        with patch("webhook_server.send_telegram") as mock_send, \
+             patch("webhook_server._reset_session") as mock_reset:
+            client.post("/webhook", json=telegram_message("/new"))
+
+        mock_reset.assert_called_once()
+        mock_send.assert_called_once()
+        assert "🔄" in mock_send.call_args[0][1]
+
 
 # ---------------------------------------------------------------------------
 # Skill loading tests

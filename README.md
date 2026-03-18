@@ -11,6 +11,7 @@ Built as a clean alternative to OpenClaw for Claude Max users who want phone-bas
 ## What it does
 
 - **Text your AI from anywhere** — send a message on Telegram, Claude Code executes it on your machine
+- **Conversation memory** — Claude remembers context within a session (auto-resets after 6 hours of inactivity, or send `/new` to start fresh)
 - **Natural language scheduling** — "every weekday at 8am send me a good morning message" just works
 - **Smart catch-up** — if your PC was off when a task was due, the system recovers it intelligently when it comes back on
 - **Full audit log** — every task execution is logged to `run_log.jsonl`, queryable via plain English
@@ -62,8 +63,8 @@ Your Phone (Telegram)
   Cloudflare Tunnel (Windows) / Caddy + domain (Linux VPS)
         ↓
   webhook_server.py  (FastAPI, runs as system service)
-        ↓
-  Claude Code CLI  (auto-detected per platform)
+        ↓  dedup → background task → per-chat lock
+  Claude Code CLI  (--session-id / --resume for conversation continuity)
         ↓
   tasks.json  ←————— scheduled task definitions
         ↓
@@ -91,6 +92,7 @@ Send these directly to your bot:
 | "Run my weekly review right now" | Fires immediately |
 | "Did anything fail this week?" | Queries the run log |
 | "What would happen if my PC was off at 8am?" | Explains catch-up behavior |
+| `/new` | Starts a fresh conversation (clears session context) |
 
 ---
 
@@ -130,8 +132,8 @@ claude-assistant-bridge/
 │   ├── setup-linux-vps.md
 │   └── comparison-openclaw.md
 └── tests/
-    ├── test_scheduler.py   # 20 catch-up logic tests
-    └── test_webhook.py     # 12 routing and auth tests
+    ├── test_scheduler.py   # 18 catch-up logic tests
+    └── test_webhook.py     # 16 routing, auth, and dedup tests
 ```
 
 ---

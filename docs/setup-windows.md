@@ -230,6 +230,7 @@ Once the system is running, you can manage scheduled tasks entirely through Tele
 | "Run my weekly review right now" | Fires immediately |
 | "Did anything fail this week?" | Queries the run log |
 | "What happens to my tasks if my PC is off?" | Explains catch-up behavior |
+| `/new` | Starts a fresh conversation (clears session context) |
 
 ---
 
@@ -300,6 +301,8 @@ If entries show `status: skipped` with `catch_up=false`, the task missed its win
 **The tunnel URL changes on restart.** Cloudflared's free quick tunnel generates a new URL each time cloudflared restarts. CAB handles this automatically — the webhook server detects the new URL and re-registers with Telegram on startup. A background health monitor also checks the tunnel every 2 minutes and restarts cloudflared if the tunnel goes stale, re-registering the webhook automatically. No manual intervention needed.
 
 **Your PC must be on for tasks to execute.** If the PC is off at a scheduled task time, CAB uses catch-up logic to run the task when the PC wakes up, within the configured window. Tasks with `catch_up: false` are skipped entirely if missed.
+
+**Conversations have memory.** Claude remembers context within a session. Sessions auto-reset after 6 hours of inactivity (configurable via `SESSION_TIMEOUT_HOURS` in `.env`). Send `/new` to start a fresh conversation at any time.
 
 **notes.md is auto-maintained by the assistant.** Every conversation injects `notes.md` as context and instructs the AI to update it with project paths, preferences, and decisions. You can also edit it manually to pre-populate context. This file is gitignored.
 

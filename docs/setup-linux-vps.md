@@ -317,4 +317,6 @@ This keeps the VPS credentials fresh automatically as long as your Windows machi
 
 **Credentials will expire.** Claude Code's OAuth tokens refresh automatically, but if you ever get auth errors, re-copy your `.credentials.json` from your local machine and restart the service.
 
+**Conversations have memory.** Claude remembers context within a session. Sessions auto-reset after 6 hours of inactivity (configurable via `SESSION_TIMEOUT_HOURS` in `.env`). Send `/new` to start a fresh conversation at any time.
+
 **Running both Windows and VPS simultaneously** is fine — just use a different Telegram bot for each. Each bot registers its own webhook URL independently.
