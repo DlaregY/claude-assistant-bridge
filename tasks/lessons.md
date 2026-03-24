@@ -1,5 +1,9 @@
 # Lessons Learned
 
+## 2026-03-24 PostgreSQL cannot change function return type via CREATE OR REPLACE
+**Pattern**: Added `last_sign_in_at` column to two admin RPC functions using `CREATE OR REPLACE`. Migration failed with `cannot change return type of existing function (SQLSTATE 42P13)`.
+**Rule**: When modifying a Postgres function's return columns (or adding new OUT parameters), always `DROP FUNCTION IF EXISTS <name>(<arg types>)` before the `CREATE OR REPLACE`. This applies to both return column additions and parameter signature changes.
+
 ## 2026-03-23 ChallengeBoard commits must not include Co-Authored-By Claude trailer
 **Pattern**: Default commit style appends `Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>`. For the ChallengeBoard project, this can break Vercel deployment auth.
 **Rule**: Never include the Co-Authored-By trailer on challengeboard commits. Commit using only Gerald's git identity. Note is saved in project memory at `C:/Users/geral/.claude/projects/c--challengeboard/memory/MEMORY.md`.
