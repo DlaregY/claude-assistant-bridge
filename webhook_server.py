@@ -265,10 +265,11 @@ def _restart_cloudflared() -> bool:
     """Restart the cloudflared Windows service via PowerShell (needs elevation)."""
     logging.info("Restarting cloudflared service...")
     try:
+        flags = subprocess.CREATE_NO_WINDOW
         result = subprocess.run(
             ["powershell", "-Command",
              f"Restart-Service {TUNNEL_SERVICE_NAME}"],
-            capture_output=True, text=True, timeout=30
+            capture_output=True, text=True, timeout=30, creationflags=flags
         )
         if result.returncode == 0:
             logging.info("cloudflared service restarted successfully")
@@ -277,7 +278,7 @@ def _restart_cloudflared() -> bool:
         result = subprocess.run(
             ["powershell", "-Command",
              f"Start-Process powershell -ArgumentList '-Command','Restart-Service {TUNNEL_SERVICE_NAME}' -Verb RunAs -Wait"],
-            capture_output=True, text=True, timeout=30
+            capture_output=True, text=True, timeout=30, creationflags=flags
         )
         if result.returncode == 0:
             logging.info("cloudflared service restarted via elevation")
@@ -443,9 +444,10 @@ def run_claude(message: str, session_id: str = None, is_resume: bool = False) ->
 
     cmd.append(message)
 
+    creation_flags = subprocess.CREATE_NO_WINDOW if IS_WINDOWS else 0
     result = subprocess.run(
         cmd, capture_output=True, text=True, timeout=300,
-        encoding="utf-8", errors="replace"
+        encoding="utf-8", errors="replace", creationflags=creation_flags
     )
     output = result.stdout.strip() or result.stderr.strip() or "No response from Claude."
     stderr = result.stderr.strip().lower()
