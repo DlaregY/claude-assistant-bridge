@@ -1,155 +1,256 @@
 ---
 name: session-commit
-description: "End-of-session procedure for persisting context, committing code, deploying, and recording lessons. Triggered by: 'commit', 'wrap up', 'end session', 'goodnight' (and variations)."
-compatibility: Created for Longfellow (Windows / Claude Assistant Bridge)
+description: "Unified end-of-session SOP for Zo, Longfellow, and VPS. Persists state (git, Hub, memory, lessons) and optionally deploys. Triggers: 'commit', 'session commit', 'wrap up', 'end session', 'goodnight' (autonomous), 'checkpoint commit' (light)."
+version: 2.0.0
+last-updated: 2026-04-20
+canonical-source: https://raw.githubusercontent.com/DlaregY/zo-workspace-backup/master/Skills/session-commit/SKILL.md
+compatibility: Runs on Zo Computer, Longfellow (Windows / CAB), and Hetzner VPS (CAB).
 metadata:
-  author: gerald.longfellow
+  author: gerald.zo.computer
 ---
+
 # Session Commit
 
-Persist all meaningful context from the current session. If the session was trivial (quick Q&A, no state changes, no new facts), skip to Step 8 and confirm that nothing needed persisting.
+End-of-session SOP. Persists meaningful context so the next session can pick up cleanly.
 
-**Trigger detection**: This skill activates when the user says "commit", "wrap up", "end session", "goodnight", "good night", "gn", or "nighty night."
+## 0. Trigger detection & mode
 
-**Autonomous mode**: If the trigger word is any variation of "goodnight", set `AUTONOMOUS=true`. In autonomous mode, skip the pause in Step 0d — the user is going to bed. Execute all steps without waiting for input, then summarize at the end.
+Parse the trigger phrase:
 
-## Steps
+| Phrase | MODE | AUTONOMOUS |
+|---|---|---|
+| `commit`, `session commit`, `wrap up`, `end session` | `full` | false |
+| `goodnight`, `gn`, `good night`, `nighty night` | `full` | **true** |
+| `checkpoint commit`, `checkpoint` | `checkpoint` | false |
 
-### 0. Pre-Commit Review
+- `MODE=full` runs every applicable step.
+- `MODE=checkpoint` runs only git + Hub + terse confirmation, then suggests `/compact`. Used when locking in progress mid-session without ending the chat.
+- `AUTONOMOUS=true` skips all pauses (Step 2, loose-ends review) and executes straight through.
 
-Before persisting anything, take stock of the session and surface unfinished business.
+## 1. Environment detection
 
-**Skip this entire step if `AUTONOMOUS=true`.** Instead, silently note any loose ends and include them in the confirmation summary (Step 9) so the user sees them next session.
+Run once at the start. Sets `ENV`:
 
-a. **Reconstruct the session narrative** — From conversation context, summarize in 3–6 bullets: what was attempted, what was completed, and what was explicitly deferred or left open.
+```
+if [ -f /home/workspace/CLAUDE.md ] && [ -d /home/.z ]; then ENV=zo
+elif [ -d /home/claude/claude-assistant-bridge ]; then ENV=vps
+elif command -v powershell.exe >/dev/null 2>&1 && powershell.exe -NoProfile -Command "Test-Path C:/AIAssistant" | grep -q True; then ENV=longfellow
+else ENV=unknown
+fi
+```
 
-b. **Scan objective signals** — Run the following and cross-reference against the session narrative:
-   - `git -C C:/AIAssistant status --short` — any staged/unstaged changes that were not committed
-   - Read `C:/AIAssistant/context/active-session.md` — check "Current Task" and "Key Decisions" for items touched this session but possibly incomplete
-   - Scan the conversation for phrases like "TODO", "follow up", "later", "next step", "we should also", "don't forget" — signals of deferred work
+Workspace roots per env:
+- `zo` → `/home/workspace`
+- `vps` → `/home/claude/claude-assistant-bridge`
+- `longfellow` → `C:/AIAssistant`
 
-c. **Identify loose ends and next steps** — Compile a short list of:
-   - **Loose ends**: Things started but not finished, errors not fully resolved, changes not committed, or tasks mentioned but never acted on
-   - **Natural next steps**: Logical follow-ons that would make the session's work more complete
+## 2. Version check (always, fast, non-blocking)
 
-d. **Pause and present to Gerald** — If any loose ends or next steps were found, present them:
+Fetch the `canonical-source` URL and compare `version:` in its frontmatter to the local one. If remote > local, print a one-line warning:
+
+> ⚠️ session-commit v2.1.0 available (local is v2.0.0). Run with `--sync-skill` to pull.
+
+Skip silently if network unavailable or fetch fails. Never block the commit on this.
+
+## 3. Pre-Commit Review
+
+**Skip entirely if `MODE=checkpoint` or `AUTONOMOUS=true`.**
+
+a. **Reconstruct the session narrative** — 3–6 bullets: attempted, completed, deferred.
+
+b. **Scan objective signals (env-branched)** — run in parallel:
+   - `zo`:
+     - `git -C /home/workspace status --short`
+     - Each known project repo's `git status --short` (Projects/erin, save-my-run, apartmentsetuplab, etc.)
+     - `curl -s 'http://localhost:3099/hub/api/items?status=open' | jq '[.[] | select(.updated_at > (now - 86400 | todate))]'` — items touched in last 24h
+   - `longfellow`:
+     - `git -C C:/AIAssistant status --short`
+     - Read `C:/AIAssistant/context/active-session.md` for in-flight task state
+   - `vps`:
+     - `git -C /home/claude/claude-assistant-bridge status --short`
+   - All envs: scan conversation for "TODO", "follow up", "later", "we should also", "don't forget".
+
+c. **Present loose ends + next steps** — if any found, pause:
 
    > **Session Review**
-   > Here's what we accomplished: [bullet list]
+   > Accomplished: [bullets]
+   > Loose ends: [list]
+   > Suggested next steps: [list]
    >
-   > Before I wrap up, I noticed a few things:
-   > - **Loose ends**: [list]
-   > - **Suggested next steps**: [list]
-   >
-   > Want to tackle any of these before I commit, or should I skip ahead and wrap up now?
+   > Tackle any of these, or wrap up now?
 
-   Wait for Gerald's response. If he says "skip" / "wrap up" / "just commit", proceed to Step 1. If he engages with a loose end, help him complete it, then re-run from Step 0 when that work is done.
+   If "skip" / "wrap up" / "just commit" → proceed. Otherwise engage, then re-run from Step 3 when done.
 
-e. **If nothing notable was found** — Skip the pause. Note briefly that the session looked clean, then proceed to Step 1.
+d. If nothing notable — skip pause, note briefly, continue.
 
-### 1. Update Active Session — Mark In-Progress
+## 4. Update project context files
 
-Update `C:/AIAssistant/context/active-session.md`:
-- Set **Status** to `committing`
-- Set **Current Task** to `Session commit in progress`
-- Set **Last Updated** to current timestamp
+Update the active project's `AGENTS.md` with any new rules, preferences, or state changes discovered this session. Applies across all envs.
 
-This signals to any crash-recovery logic that a commit was in flight.
+- `zo`: e.g. `ftt-config/AGENTS.md`, `Projects/Goldstein/AGENTS.md`
+- `longfellow`: `C:/AIAssistant/CLAUDE.md`, relevant context files
+- `vps`: `/home/claude/claude-assistant-bridge/CLAUDE.md`
 
-### 2. Re-Document
+## 5. Project repo commit + push
 
-Before committing, ensure documentation reflects reality:
+For each directory touched this session that has its own `.git` (separate from the workspace repo):
 
-a. Run `git diff HEAD` to see all uncommitted changes.
+1. `git -C <dir> status --porcelain` — if empty, skip.
+2. `git -C <dir> add <specific files>` (avoid `-A` to prevent secret leakage).
+3. `git -C <dir> commit -m "Session commit: <summary>"` (checkpoint: `"Checkpoint: <summary>"`).
+4. `git -C <dir> push`.
+5. Report hash + push status. If push fails, report but continue.
 
-b. For each meaningful change, check whether any documentation files need updating:
-   - `CLAUDE.md` — project context, architecture, known issues, pending items
-   - `README.md` — if public-facing info changed
-   - `docs/*.md` — if the changed functionality is covered there
-   - Test counts in "Development Conventions" if tests were added/removed
+**Push is mandatory** — some project agents do `git fetch && reset --hard` on their next run.
 
-c. Update the "Pending Items" section of `CLAUDE.md` if the session created or resolved any.
+### Known project repos
 
-### 3. Commit
+| Project | Dir (zo) | Separate git? |
+|---|---|---|
+| Erin News Feed | `Projects/erin/` | Yes — `DlaregY/erin.geraldnorby.com` |
+| Save My Run | `Projects/save-my-run/` | Check at runtime |
+| Apartment Setup Lab | `Projects/apartmentsetuplab/repo/` | Yes — submodule |
+| cfareview | `Projects/cfareview/` | Check at runtime |
+| ChallengeBoard | `Projects/challengeboard/` | Check at runtime |
+| Goldstein | `Projects/Goldstein/` | No — workspace repo |
+| FTT | `ftt-config/` | No — workspace repo |
 
-a. Run `git status` — if nothing to commit, skip to Step 5.
+## 6. Workspace repo commit + push [ENV=zo only]
 
-b. Stage all relevant changes. Prefer naming specific files over `git add -A`. Never stage secrets (`.env`, credentials).
+**Always run on Zo.** The workspace repo (`/home/workspace`) holds the majority of state.
 
-c. Commit with a descriptive message in imperative mood, following the project's existing style:
-   ```
-   git commit -m "<imperative summary of session work>"
-   ```
+1. `git -C /home/workspace status --short` — if empty, skip.
+2. Review staged changes. Verify no secret files (`.env`, `credentials.json`, unencrypted tokens).
+3. If submodules were updated in Step 5, their new SHAs need to be registered here:
+   `git -C /home/workspace add Projects/apartmentsetuplab` (or relevant submodule path).
+4. `git -C /home/workspace add <files>` (prefer specific paths; `-A` only if changes are reviewed).
+5. `git -C /home/workspace commit -m "Session commit: <summary>"`.
+6. `git -C /home/workspace push` → `zo-workspace-backup`.
 
-### 4. Push
+If push fails, report and continue. The nightly 3:11 AM backup will retry.
 
-```
-git push
-```
+## 7. CAB deploy to VPS [conditional]
 
-If push fails (auth, network), report the failure but continue. The local commit is still valuable.
+Run if this session modified CAB code (`webhook_server.py`, `runner.py`, `setup.py`, `skills/*.md`, `services/*.py`, or any imported module):
 
-### 5. Deploy to VPS
-
-**Only if the commit touched server-side files**: `webhook_server.py`, `runner.py`, `setup.py`, `skills/*.md`, `services/*.py`, or any Python module they import.
+- `ENV=longfellow`: always run if Step 5 committed the CAB repo.
+- `ENV=zo`: run only if the session operated on the CAB codebase remotely (rare).
+- `ENV=vps`: skip — you are the VPS.
 
 ```bash
 ssh root@178.156.228.92 "cd /home/claude/claude-assistant-bridge && git pull && systemctl restart claude-assistant-bridge"
 ```
 
-- If the session only touched docs or Windows-only files, skip.
-- If SSH/deploy fails, report but continue.
+Report pull + restart status. If SSH fails, report and continue.
 
-### 6. Update Memory
+## 8. Global memory
 
-Extract any *universal* facts learned this session to the memory file at `C:/Users/geral/.claude/projects/C--AIAssistant/memory/MEMORY.md`:
-- New infrastructure details (IPs, ports, services)
-- User preferences discovered
-- Cross-project patterns
+**Skip if `MODE=checkpoint`.**
 
-Edit in place. Do not overwrite existing content. Do not duplicate info already present. Project-specific details stay in `CLAUDE.md` or `context/*.md`.
+Append *universal* facts (cross-project, cross-session) to the global memory file:
 
-### 7. Critique and Lessons Learned
+- `zo` → `/home/workspace/MEMORY.md`
+- `longfellow` → `C:/Users/geral/.claude/projects/C--AIAssistant/memory/MEMORY.md`
+- `vps` → `/home/claude/MEMORY.md` (create if missing)
 
-Briefly assess the session:
-- What went well?
-- What was wasted effort?
-- What could be improved next time?
+Edit in place. Do not duplicate existing entries. Project-specific details stay in `<project>/AGENTS.md`.
 
-If the critique surfaces a **reusable lesson** (mistake to avoid, better approach, user correction), append to `C:/AIAssistant/tasks/lessons.md`:
+## 9. Hub sync [ENV=zo only]
+
+**Skip on other envs — they don't have Hub access.**
+
+Fetch and sync.
+
+a. **Resolve completed items**:
+```bash
+curl -s -X POST http://localhost:3099/hub/api/items/update \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $HUB_API_SECRET" \
+  --data '{"id": <id>, "status": "resolved", "resolved_note": "<what was done>"}'
+```
+
+b. **Add new follow-ups** (for each new task/bug/idea discovered):
+```bash
+curl -s -X POST http://localhost:3099/hub/api/items \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $HUB_API_SECRET" \
+  --data '{"project_slug": "<slug>", "title": "<title>", "type": "<type>", "severity": "medium", "source": "session-commit"}'
+```
+
+Default unknown project → `inbox`. Default severity → `medium`.
+
+Use `bash -lc` on Zo if `HUB_API_SECRET` isn't loaded in the shell (it's sourced via `BASH_ENV=~/.zo_secrets`).
+
+If Hub API unreachable, report and continue.
+
+## 10. Lessons critique
+
+**Skip if `MODE=checkpoint`.**
+
+Briefly assess: what went well, what was wasted, what could be better. If a reusable lesson emerged, classify and save:
+
+**Is the lesson general or project-specific?**
+
+- **General** (applies across projects / to Gerald's workflow broadly):
+  - `zo` → append to `/home/workspace/LESSONS.md`
+  - `longfellow` → append to `C:/AIAssistant/LESSONS.md`
+  - `vps` → append to `/home/claude/LESSONS.md`
+- **Project-specific** → append to `<project>/LESSONS.md` (create if missing).
+
+Format:
 
 ```markdown
 ## [YYYY-MM-DD] Brief title
-**Pattern**: What happened
-**Rule**: What to do differently
+**Pattern**: What happened.
+**Rule**: What to do differently next time.
 ```
 
-Create the file with a `# Lessons Learned` header if it doesn't exist yet.
+If no reusable lesson emerged, skip. Not every session produces one.
 
-If no reusable lesson emerged, skip this step.
+## 11. Confirmation
 
-### 8. Set Active Session to Idle
-
-Update `C:/AIAssistant/context/active-session.md`:
-- Set **Status** to `idle`
-- Set **Last Updated** to current timestamp
-- Set **Current Task** to `None — session committed.`
-- Clear **Key Decisions Made** and **Pending User Questions**
-- In **Recent Context**, write a 1–2 line summary of what this session accomplished (breadcrumb for next session)
-
-### 9. Confirmation
+### MODE=full
 
 Respond with a bulleted summary:
 
-> **Session committed.**
-> - **Git**: Committed `<hash>` — "<message>" (pushed to origin)
-> - **VPS**: Deployed and restarted (or: skipped / failed)
-> - **Docs**: Updated X, Y (or: no doc changes needed)
-> - **Memory**: Added note about X (or: no new facts)
-> - **Lessons**: Saved lesson about X (or: no new lessons)
-> - **Active session**: Set to idle
+> **Session committed.** (env: zo)
+> - **Project repos**: Committed `<hash>` to erin (pushed) | skipped save-my-run (clean)
+> - **Workspace repo**: Committed `<hash>` (pushed to zo-workspace-backup)
+> - **CAB deploy**: n/a (no CAB changes) | Deployed + restarted
+> - **Docs**: Updated ftt-config/AGENTS.md, MEMORY.md
+> - **Hub**: Resolved 3 items, added 2 follow-ups
+> - **Lessons**: Saved general lesson "Verify port 22 before assuming host is down"
+> - **Version check**: current (v2.0.0)
 
-If in autonomous mode and loose ends were found in Step 0, append:
-> - **Loose ends for next session**: [list]
+If `AUTONOMOUS=true` and Step 3 was skipped, include a **Loose ends for next session** section with any signals that were detected but not surfaced.
 
-If any step failed, report it explicitly.
+If any step failed, report explicitly.
+
+### MODE=checkpoint
+
+Single line, terse:
+
+> ✅ Checkpoint `<hash>` (project + workspace pushed, hub synced). Consider `/compact`.
+
+## 12. Sync command (manual, rare)
+
+If the user invokes `session commit --sync-skill` or `sync session-commit skill`:
+
+1. Fetch `canonical-source` URL.
+2. Parse remote `version:`. If remote <= local, report "already up to date" and stop.
+3. If `ENV=zo` and local `SKILL.md` has uncommitted changes, **refuse**: "Local skill has uncommitted edits. Commit or discard first."
+4. Overwrite local `SKILL.md` with remote content.
+5. If `ENV=zo`, propagate to other environments:
+   - `scp` new SKILL.md to Longfellow: `scp /home/workspace/Skills/session-commit/SKILL.md longfellow:C:/AIAssistant/skills/session_commit.md`
+   - `scp` to VPS: `scp /home/workspace/Skills/session-commit/SKILL.md root@178.156.228.92:/home/claude/claude-assistant-bridge/skills/session_commit.md`
+6. Report which environments got synced and any failures.
+
+## Execution Notes
+
+| Action | Zo Chat | Claude Code |
+|---|---|---|
+| Edit MEMORY.md / AGENTS.md | `edit_file_llm` | `Edit` |
+| Git | `run_bash_command` | `Bash` |
+| Hub API writes | `bash -lc` + `Authorization: Bearer $HUB_API_SECRET` | Same |
+| SSH to VPS / Longfellow | `run_bash_command` | `Bash` |
+| Read files | `read_file` | `Read` |
