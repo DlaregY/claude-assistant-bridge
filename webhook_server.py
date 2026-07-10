@@ -5,6 +5,7 @@ Runs as a persistent service (Windows: Task Scheduler, Linux: systemd).
 """
 
 import os
+import sys
 import glob
 import json
 import time
@@ -19,6 +20,17 @@ import logging
 from datetime import datetime
 from fastapi import FastAPI, Request
 from dotenv import load_dotenv
+
+# When launched without a console (pythonw.exe via Task Scheduler), sys.stdout and
+# sys.stderr are None. The first print()/uvicorn log write would then raise and kill
+# the process (exit code 1). Redirect them to a sink so the server runs windowless.
+if sys.stdout is None or sys.stderr is None:
+    _null = open(os.devnull, "w")
+    if sys.stdout is None:
+        sys.stdout = _null
+    if sys.stderr is None:
+        sys.stderr = _null
+
 import uvicorn
 
 # ---------------------------------------------------------------------------
@@ -262,28 +274,30 @@ _current_tunnel_url: str = ""
 
 
 def _restart_cloudflared() -> bool:
-    """Restart the cloudflared Windows service via PowerShell (needs elevation)."""
+    """Restart the cloudflared Windows service via PowerShell.
+
+    IMPORTANT: never triggers a UAC prompt. A previous version fell back to
+    `Start-Process -Verb RunAs`, which switches Windows to the secure desktop
+    and grabs all keyboard/mouse/audio input. When the tunnel flaps (e.g. VPN
+    DNS interference) that fired every ~2 minutes and caused system-wide input
+    lag. If the non-elevated restart fails, we log and give up rather than
+    elevate — the health loop will retry on its normal cadence.
+    """
     logging.info("Restarting cloudflared service...")
     try:
         flags = subprocess.CREATE_NO_WINDOW
         result = subprocess.run(
-            ["powershell", "-Command",
+            ["powershell", "-NoProfile", "-Command",
              f"Restart-Service {TUNNEL_SERVICE_NAME}"],
             capture_output=True, text=True, timeout=30, creationflags=flags
         )
         if result.returncode == 0:
             logging.info("cloudflared service restarted successfully")
             return True
-        # Try elevated restart if direct restart fails (access denied)
-        result = subprocess.run(
-            ["powershell", "-Command",
-             f"Start-Process powershell -ArgumentList '-Command','Restart-Service {TUNNEL_SERVICE_NAME}' -Verb RunAs -Wait"],
-            capture_output=True, text=True, timeout=30, creationflags=flags
+        logging.warning(
+            "cloudflared restart failed (needs admin?); NOT elevating to avoid "
+            f"UAC/input disruption. stderr: {result.stderr.strip()}"
         )
-        if result.returncode == 0:
-            logging.info("cloudflared service restarted via elevation")
-            return True
-        logging.error(f"Failed to restart cloudflared: {result.stderr.strip()}")
         return False
     except Exception as e:
         logging.error(f"Exception restarting cloudflared: {e}")
@@ -307,7 +321,10 @@ async def _tunnel_health_loop():
 
     while True:
         try:
-            if _current_tunnel_url and not _current_tunnel_url.startswith("https://"):
+            # No valid tunnel URL yet (detection failed / using fallback): do NOT
+            # treat an empty/non-https URL as "unhealthy" and hammer restarts —
+            # that was the trigger for the restart storm. Just wait and re-check.
+            if not _current_tunnel_url or not _current_tunnel_url.startswith("https://"):
                 await asyncio.sleep(TUNNEL_CHECK_INTERVAL)
                 continue
 
