@@ -23,6 +23,12 @@ Built as a clean alternative to OpenClaw for Claude Max users who want phone-bas
 
 ## Deployment Options
 
+### Security boundary
+
+CAB invokes Claude Code with `--dangerously-skip-permissions` for incoming commands and scheduled tasks. Authenticated commands can read, change, or delete anything accessible to the service account and run programs with that account's permissions. CAB is not a sandbox. Run it as a dedicated, non-administrator account with access only to the files and credentials it needs.
+
+Webhook requests must pass Telegram's secret-header check and the configured Telegram user-ID check. Protect your Telegram account, bot token, and webhook secret; authentication does not restrict what an accepted command can do. Messages pass through Telegram, and prompts and any content Claude reads may be sent to Anthropic.
+
 ### Windows (local PC)
 Full local file access. Claude Code can read, write, and organize anything on your machine. Catch-up logic handles gaps when the PC is off or sleeping.
 

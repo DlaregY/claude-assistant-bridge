@@ -78,28 +78,16 @@ useradd -m -s /bin/bash claude
 
 ## 5. Authenticate Claude Code
 
-Claude Code stores credentials in `~/.claude/.credentials.json`. The easiest approach is to copy your existing credentials from your local machine rather than going through the interactive auth flow over SSH.
-
-**On your local machine** (in a separate terminal):
+Authenticate as the dedicated service user on the VPS. From your root SSH session:
 
 ```bash
-# macOS / Linux
-scp ~/.claude/.credentials.json root@YOUR_SERVER_IP:/home/claude/.claude/.credentials.json
-
-# Windows (Command Prompt)
-scp %USERPROFILE%\.claude\.credentials.json root@YOUR_SERVER_IP:/home/claude/.claude/.credentials.json
+su - claude
+claude
 ```
 
-Back on the server, fix ownership and verify:
+Complete the login prompt (or enter `/login`). Open the displayed authorization URL in your own browser. If the browser returns a code, paste it into the waiting SSH terminal. Check `/status`, exit Claude Code, then run `exit` to return to root for the next step. This gives the VPS its own login; do not copy or periodically synchronize your PC's `.credentials.json`.
 
-```bash
-chown -R claude:claude /home/claude/.claude
-
-# Test that auth works
-su - claude -c "claude -p 'say hello' --dangerously-skip-permissions"
-```
-
-You should see a response like `Hello! How can I help you today?`
+For unattended use, Claude Code also supports a long-lived subscription token generated with `claude setup-token`. See [Credentials Renewal](#credentials-renewal) for configuration and recovery. Neither method makes authentication permanent.
 
 ---
 
@@ -286,26 +274,21 @@ su - claude -c "python3 /home/claude/claude-assistant-bridge/runner.py"
 
 ## Credentials Renewal
 
-Claude Code uses OAuth tokens that expire every few hours. When a token expires, your VPS bot will respond with a 401 authentication error. The fix is to copy fresh credentials from your local machine to the VPS.
+### Direct login recovery
 
-**Manual fix (when it breaks):**
+If the VPS reports an authentication error, repeat step 5 as the same service user. A working PC login does not prove the VPS login works. Check `/status` and then send a harmless Telegram message to verify the complete path. A running webhook process alone does not prove Claude can authenticate.
 
-On your Windows machine:
+### Long-lived token for unattended use
 
-```cmd
-scp %USERPROFILE%\.claude\.credentials.json root@YOUR_SERVER_IP:/home/claude/.claude/.credentials.json
-ssh root@YOUR_SERVER_IP "chown claude:claude /home/claude/.claude/.credentials.json"
-```
+Run `claude setup-token` in a trusted terminal and complete browser authorization. Claude Code prints a subscription token; its [authentication documentation](https://code.claude.com/docs/en/authentication#generate-a-long-lived-token) describes a one-year lifetime. Keep it out of chat, source control, logs, and shared shell history.
 
-Claude Code reads credentials fresh on each invocation — no service restart needed.
+In the VPS checkout, privately edit the existing `.env` file to add `CLAUDE_CODE_OAUTH_TOKEN` with that token. Both CAB entry points load this file and pass the environment to Claude Code. Make the file readable only by the service user (`chmod 600 .env`, with ownership set to `claude`). Keep secret-bearing files out of repository backups even when Git ignores them.
 
-**Automated fix (recommended):**
+Restart the webhook service after changing `.env`; the runner loads it on its next invocation. Test through Telegram. A bare `claude` command in another shell does not automatically load CAB's `.env`, so its authentication status can differ from the service's.
 
-If you're also running CAB on Windows, use your Windows bot to schedule automatic renewal. Send this message to your Windows bot:
+Record the renewal date and replace the token before expiry. If it is revoked or expires, generate a replacement and restart the service. To return to direct login, remove `CLAUDE_CODE_OAUTH_TOKEN` from both `.env` and any service environment, restart, and repeat step 5. An expired environment token can override a valid saved login.
 
-> "Add a task: every 2 hours copy my Claude credentials to the VPS. Run: scp C:/Users/YOUR_USERNAME/.claude/.credentials.json root@YOUR_SERVER_IP:/home/claude/.claude/.credentials.json && ssh root@YOUR_SERVER_IP 'chown claude:claude /home/claude/.claude/.credentials.json'"
-
-This keeps the VPS credentials fresh automatically as long as your Windows machine is on. No restart needed — Claude Code picks up the updated credentials on its next invocation.
+This uses the Claude subscription and its usage limits. An `ANTHROPIC_API_KEY` is a separate, usage-billed alternative and takes precedence in non-interactive Claude Code; do not leave one configured unintentionally. Do not restore periodic PC-to-VPS credential copying.
 
 ---
 
@@ -315,7 +298,7 @@ This keeps the VPS credentials fresh automatically as long as your Windows machi
 
 **Catch-up logic is less important here.** Since the VPS runs 24/7, tasks fire exactly on schedule. The catch-up system still works correctly but rarely triggers.
 
-**Credentials will expire.** Claude Code's OAuth tokens refresh automatically, but if you ever get auth errors, re-copy your `.credentials.json` from your local machine and restart the service.
+**Authentication needs recovery.** Follow the renewal section for the method you configured. Keep the VPS login independent of your PC.
 
 **Conversations have memory.** Claude remembers context within a session. Sessions auto-reset after 6 hours of inactivity (configurable via `SESSION_TIMEOUT_HOURS` in `.env`). Send `/new` to start a fresh conversation at any time.
 
