@@ -1,5 +1,7 @@
 # Claude Assistant Bridge (CAB)
 
+> **Status: not actively maintained.** This is a personal tool, published as-is under the MIT license. It still works for its author's own setup, but it is not developed further and issues and pull requests are not monitored.
+
 A self-hosted, phone-controlled AI assistant built on Claude Code and Telegram. Text your computer from anywhere and Claude executes tasks on your behalf — organizing files, answering questions, running scheduled workflows, and more.
 
 **Runs on Windows or a Linux VPS. No Docker. No extra cost beyond your Claude Max subscription.**
