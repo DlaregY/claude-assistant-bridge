@@ -9,7 +9,9 @@ import sys
 import glob
 import json
 import time
+import hmac
 import uuid
+import secrets
 import asyncio
 import platform
 import subprocess
@@ -19,6 +21,7 @@ import requests
 import logging
 from datetime import datetime
 from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 
 # When launched without a console (pythonw.exe via Task Scheduler), sys.stdout and
@@ -53,6 +56,11 @@ RUN_LOG_FILE = os.getenv("RUN_LOG_FILE")
 LOGS_DIR = os.getenv("LOGS_DIR")
 USER_NAME = os.getenv("USER_DISPLAY_NAME", "User")
 TIMEZONE = os.getenv("TIMEZONE", "America/Chicago")
+# Telegram echoes this in X-Telegram-Bot-Api-Secret-Token on every update, which is
+# the only proof a request came from Telegram. Without it, anyone who knows the
+# webhook URL can forge a message "from" the allowed user. If unset, a fresh random
+# secret is generated each start; webhooks are re-registered at startup anyway.
+WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET") or secrets.token_urlsafe(32)
 
 # ---------------------------------------------------------------------------
 # Claude executable resolution
@@ -193,6 +201,7 @@ def load_handlers(app_instance):
         "user_name": USER_NAME,
         "timezone": TIMEZONE,
         "allowed_user_id": ALLOWED_USER_ID,
+        "webhook_secret": WEBHOOK_SECRET,
         "logs_dir": LOGS_DIR,
         "base_dir": os.path.dirname(os.path.abspath(__file__)),
     }
@@ -242,6 +251,17 @@ async def lifespan(app):
         health_task.cancel()
 
 app = FastAPI(lifespan=lifespan)
+
+
+@app.middleware("http")
+async def verify_telegram_secret(request: Request, call_next):
+    """Reject any /webhook* request (CAB or plugin handler) without the registered secret."""
+    if request.url.path.startswith("/webhook"):
+        token = request.headers.get("x-telegram-bot-api-secret-token", "")
+        if not hmac.compare_digest(token.encode(), WEBHOOK_SECRET.encode()):
+            logging.warning(f"Rejected {request.url.path} request with missing or wrong secret token")
+            return JSONResponse({"ok": False}, status_code=403)
+    return await call_next(request)
 
 def get_tunnel_url(retries=10, delay=3) -> str:
     """Poll cloudflared's local API to get the current tunnel URL."""
@@ -361,7 +381,7 @@ def register_webhook(tunnel_url: str):
     """Register webhook URLs with Telegram for CAB and all loaded handlers."""
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook"
     webhook_url = f"{tunnel_url}/webhook"
-    resp = requests.post(url, json={"url": webhook_url})
+    resp = requests.post(url, json={"url": webhook_url, "secret_token": WEBHOOK_SECRET})
     result = resp.json()
     logging.info(f"CAB webhook registered: {result}")
     print(f"CAB webhook registered at {webhook_url} — {result.get('description', '')}")

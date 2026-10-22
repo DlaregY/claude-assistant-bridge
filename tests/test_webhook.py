@@ -46,7 +46,8 @@ def client():
     # Clear dedup cache between tests so each test starts fresh
     webhook_server._seen_updates.clear()
     with patch("webhook_server.register_webhook"):
-        with TestClient(app, raise_server_exceptions=False) as c:
+        with TestClient(app, raise_server_exceptions=False,
+                        headers={"X-Telegram-Bot-Api-Secret-Token": webhook_server.WEBHOOK_SECRET}) as c:
             yield c
 
 
@@ -298,3 +299,29 @@ class TestTunnelDetection:
             result = webhook_server.get_tunnel_url(retries=1, delay=0)
 
         assert result == "https://fallback.trycloudflare.com"
+
+
+# ---------------------------------------------------------------------------
+# Webhook secret token
+# ---------------------------------------------------------------------------
+
+class TestWebhookSecret:
+
+    @pytest.mark.parametrize("path", ["/webhook", "/webhook/hank"])
+    @pytest.mark.parametrize("headers", [{}, {"X-Telegram-Bot-Api-Secret-Token": "wrong"}])
+    def test_missing_or_wrong_secret_is_rejected(self, client, path, headers):
+        """A forged update claiming to be the allowed user never reaches Claude."""
+        with patch("webhook_server.send_telegram") as mock_send, \
+             patch("webhook_server.run_claude") as mock_claude:
+            response = client.post(path, json=telegram_message("rm -rf /"),
+                                   headers={"X-Telegram-Bot-Api-Secret-Token": ""} | headers)
+        assert response.status_code == 403
+        mock_claude.assert_not_called()
+        mock_send.assert_not_called()
+
+    def test_secret_sent_when_registering_webhook(self):
+        with patch("webhook_server.requests.post") as mock_post:
+            mock_post.return_value.json.return_value = {"ok": True}
+            webhook_server.register_webhook("https://example.test")
+        payload = mock_post.call_args.kwargs["json"]
+        assert payload["secret_token"] == webhook_server.WEBHOOK_SECRET
