@@ -2,7 +2,7 @@
 
 > **Status: not actively maintained.** This is a personal tool, published as-is under the MIT license. It still works for its author's own setup, but it is not developed further and issues and pull requests are not monitored.
 
-A self-hosted, phone-controlled AI assistant built on Claude Code and Telegram. Text your computer from anywhere and Claude executes tasks on your behalf — organizing files, answering questions, running scheduled workflows, and more.
+A self-hosted, phone-controlled AI assistant built on Claude Code and Telegram. Text your computer from anywhere and Claude executes tasks on your behalf: organizing files, answering questions, running scheduled workflows, and more.
 
 **Runs on Windows or a Linux VPS. No Docker. No extra cost beyond your Claude Max subscription.**
 
@@ -12,12 +12,12 @@ Built as a clean alternative to OpenClaw for Claude Max users who want phone-bas
 
 ## What it does
 
-- **Text your AI from anywhere** — send a message on Telegram, Claude Code executes it on your machine
-- **Conversation memory** — Claude remembers context within a session (auto-resets after 6 hours of inactivity, or send `/new` to start fresh)
-- **Natural language scheduling** — "every weekday at 8am send me a good morning message" just works
-- **Smart catch-up** — if your PC was off when a task was due, the system recovers it intelligently when it comes back on
-- **Full audit log** — every task execution is logged to `run_log.jsonl`, queryable via plain English
-- **Your data stays local** — tasks, logs, and configuration never leave your machine
+- **Text your AI from anywhere**: send a message on Telegram, Claude Code executes it on your machine
+- **Conversation memory**: Claude remembers context within a session (auto-resets after 6 hours of inactivity, or send `/new` to start fresh)
+- **Natural language scheduling**: "every weekday at 8am send me a good morning message" just works
+- **Smart catch-up**: if your PC was off when a task was due, the system recovers it intelligently when it comes back on
+- **Full audit log**: every task execution is logged to `run_log.jsonl`, queryable via plain English
+- **Local state**: tasks, logs, and configuration are stored on your machine, not in a hosted service
 
 ---
 
@@ -31,7 +31,7 @@ Full local file access. Claude Code can read, write, and organize anything on yo
 → [docs/setup-windows.md](docs/setup-windows.md)
 
 ### Linux VPS (~$5/month)
-True 24/7 uptime — tasks fire exactly on schedule, no catch-up needed. Best for reminders, research, drafting, and anything cloud-native.
+True 24/7 uptime. Tasks fire exactly on schedule, no catch-up needed. Best for reminders, research, drafting, and anything cloud-native.
 
 **Requirements:** Ubuntu 24.04 VPS (Hetzner CPX11 recommended), Python 3.11+, Claude Code, Telegram account, a domain name
 
@@ -50,7 +50,7 @@ cd claude-assistant-bridge
 pip install -r requirements.txt
 cp .env.example .env
 # Edit .env with your values
-python setup.py  # interactive wizard — detects Windows or Linux automatically
+python setup.py  # interactive wizard; detects Windows or Linux automatically
 ```
 
 ---
@@ -68,11 +68,11 @@ Your Phone (Telegram)
         ↓  dedup → background task → per-chat lock
   Claude Code CLI  (--session-id / --resume for conversation continuity)
         ↓
-  tasks.json  ←————— scheduled task definitions
+  tasks.json  <----- scheduled task definitions
         ↓
   runner.py  (every 5 min via Task Scheduler / cron)
         ↓
-  run_log.jsonl  ←— append-only execution history
+  run_log.jsonl  <-- append-only execution history
         ↓
   Response → Telegram → Your Phone
 ```
@@ -140,12 +140,12 @@ claude-assistant-bridge/
 
 ---
 
-## Contributing
+## Contributions
 
-PRs welcome. Please open an issue first for anything beyond small fixes.
+This project is not accepting contributions. Fork it freely if it is useful to you.
 
 ---
 
 ## License
 
-MIT — Gerald Norby
+MIT. Copyright Gerald Norby.
