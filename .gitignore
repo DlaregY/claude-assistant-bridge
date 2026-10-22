@@ -228,3 +228,8 @@ logs/
 # Windows
 Thumbs.db
 Desktop.ini
+
+# Local agent notes (machine-specific, not published)
+skills/session_commit.md
+skills/session-commit/
+tasks/
