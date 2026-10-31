@@ -356,3 +356,166 @@ class TestRunLog:
 
         result = runner.load_last_runs()
         assert "task-a" in result
+
+
+# ---------------------------------------------------------------------------
+# Issue #1: consumed state and monthly clamping
+# ---------------------------------------------------------------------------
+
+class _FixedDatetime(datetime):
+    """datetime subclass whose now() is pinned, for get_due_time tests."""
+    fixed = None
+
+    @classmethod
+    def now(cls, tz=None):
+        return cls.fixed
+
+
+def _pin_now(monkeypatch, when):
+    import runner
+    _FixedDatetime.fixed = when
+    monkeypatch.setattr(runner, "datetime", _FixedDatetime)
+
+
+def _write_log(path, entries):
+    with open(path, "w") as f:
+        for e in entries:
+            f.write(json.dumps(e) + "\n")
+
+
+class TestRunState:
+
+    def test_skipped_entry_is_consumed(self, tmp_log):
+        """A skipped entry must advance the search window so the same due time
+        is not logged as skipped again on the next pass."""
+        import runner
+        runner.RUN_LOG_FILE = tmp_log
+        _write_log(tmp_log, [
+            {"timestamp": "2026-03-01T08:05:00", "task_id": "t", "trigger": "scheduled", "status": "skipped"},
+        ])
+        st = runner.load_run_state()["t"]
+        assert st["consumed"] == datetime(2026, 3, 1, 8, 5)
+        assert st["error_count"] == 0
+
+    def test_errors_since_consumed_are_counted(self, tmp_log):
+        import runner
+        runner.RUN_LOG_FILE = tmp_log
+        _write_log(tmp_log, [
+            {"timestamp": "2026-03-01T08:00:00", "task_id": "t", "trigger": "scheduled", "status": "success"},
+            {"timestamp": "2026-03-02T08:00:30", "task_id": "t", "trigger": "scheduled", "status": "error"},
+            {"timestamp": "2026-03-02T08:10:30", "task_id": "t", "trigger": "scheduled", "status": "error"},
+        ])
+        st = runner.load_run_state()["t"]
+        assert st["consumed"] == datetime(2026, 3, 1, 8, 0)
+        assert st["error_count"] == 2
+        assert st["last_error"] == datetime(2026, 3, 2, 8, 10, 30)
+
+    def test_success_resets_error_count(self, tmp_log):
+        import runner
+        runner.RUN_LOG_FILE = tmp_log
+        _write_log(tmp_log, [
+            {"timestamp": "2026-03-02T08:00:30", "task_id": "t", "trigger": "scheduled", "status": "error"},
+            {"timestamp": "2026-03-02T08:10:30", "task_id": "t", "trigger": "scheduled", "status": "success"},
+        ])
+        st = runner.load_run_state()["t"]
+        assert st["error_count"] == 0
+        assert st["consumed"] == datetime(2026, 3, 2, 8, 10, 30)
+
+    def test_load_last_runs_still_reports_successes_only(self, tmp_log):
+        """The success-only view is kept for callers that want it."""
+        import runner
+        runner.RUN_LOG_FILE = tmp_log
+        _write_log(tmp_log, [
+            {"timestamp": "2026-03-01T08:00:00", "task_id": "t", "trigger": "scheduled", "status": "success"},
+            {"timestamp": "2026-03-02T08:05:00", "task_id": "t", "trigger": "scheduled", "status": "skipped"},
+        ])
+        assert runner.load_last_runs()["t"] == datetime(2026, 3, 1, 8, 0)
+
+
+class TestMainRetryLoop:
+    """Drive runner.main() against a temp log with run_task stubbed out."""
+
+    def _setup(self, tmp_path, monkeypatch, entries, now, task):
+        import runner
+        log = str(tmp_path / "run_log.jsonl")
+        _write_log(log, entries)
+        runner.RUN_LOG_FILE = log
+        monkeypatch.setattr(runner, "load_tasks", lambda: [task])
+        monkeypatch.setattr(runner, "send_telegram", lambda *a, **k: None)
+        calls = []
+        monkeypatch.setattr(runner, "run_task", lambda t, trig, **kw: calls.append((trig, kw)) or False)
+        _pin_now(monkeypatch, now)
+        return runner, log, calls
+
+    def test_missed_task_with_catch_up_false_is_skipped_once(self, tmp_path, monkeypatch):
+        task = make_task(schedule_type="daily", time="08:00", catch_up=False)
+        now = datetime(2026, 3, 2, 12, 0)
+        runner, log, calls = self._setup(tmp_path, monkeypatch, [], now, task)
+        runner.main()
+        runner.main()
+        runner.main()
+        entries = [json.loads(l) for l in open(log) if l.strip()]
+        assert [e["status"] for e in entries] == ["skipped"]
+        assert calls == []
+
+    def test_once_task_skipped_does_not_log_forever(self, tmp_path, monkeypatch):
+        task = make_task(schedule_type="once", datetime="2026-03-01T08:00:00", catch_up=False)
+        now = datetime(2026, 3, 2, 12, 0)
+        runner, log, calls = self._setup(tmp_path, monkeypatch, [], now, task)
+        for _ in range(5):
+            runner.main()
+        entries = [json.loads(l) for l in open(log) if l.strip()]
+        assert len(entries) == 1
+
+    def test_failing_task_backs_off_then_gives_up(self, tmp_path, monkeypatch):
+        task = make_task(schedule_type="daily", time="08:00", catch_up=True, catch_up_window_hours=None)
+        task["max_retries"] = 2
+        due = datetime(2026, 3, 2, 8, 0)
+        # two errors already logged: at 08:00:30 and 08:10:30
+        entries = [
+            {"timestamp": "2026-03-02T08:00:30", "task_id": task["id"], "trigger": "scheduled", "status": "error"},
+            {"timestamp": "2026-03-02T08:10:30", "task_id": task["id"], "trigger": "catch_up", "status": "error"},
+        ]
+        # 08:15: inside the 20-minute backoff after the second error -> no attempt
+        runner, log, calls = self._setup(tmp_path, monkeypatch, entries, due + timedelta(minutes=15), task)
+        runner.main()
+        assert calls == []
+        # 08:35: backoff elapsed -> third and final attempt
+        _pin_now(monkeypatch, due + timedelta(minutes=35))
+        runner.main()
+        assert len(calls) == 1 and calls[0][1] == {"attempt": 3, "max_attempts": 3}
+        # a third error is logged by the real run_task; simulate it, then no more attempts today
+        with open(log, "a") as f:
+            f.write(json.dumps({"timestamp": "2026-03-02T08:35:30", "task_id": task["id"],
+                                "trigger": "catch_up", "status": "error"}) + "\n")
+        _pin_now(monkeypatch, due + timedelta(hours=6))
+        runner.main()
+        assert len(calls) == 1
+        # next day's due time is found normally
+        _pin_now(monkeypatch, datetime(2026, 3, 3, 8, 2))
+        runner.main()
+        assert len(calls) == 2 and calls[1][1]["attempt"] == 1
+
+
+class TestMonthlyClamp:
+
+    def test_day_31_fires_on_last_day_of_short_month(self, monkeypatch):
+        _pin_now(monkeypatch, datetime(2026, 4, 30, 9, 1))
+        task = make_task(schedule_type="monthly", time="09:00", day=31)
+        assert get_due_time(task, datetime(2000, 1, 1)) == datetime(2026, 4, 30, 9, 0)
+
+    def test_day_31_not_due_before_last_day(self, monkeypatch):
+        _pin_now(monkeypatch, datetime(2026, 4, 29, 9, 1))
+        task = make_task(schedule_type="monthly", time="09:00", day=31)
+        assert get_due_time(task, datetime(2026, 3, 31, 9, 0)) is None
+
+    def test_missed_day_31_caught_up_in_short_month(self, monkeypatch):
+        """PC off on 31 March: the 1 April pass must still see the March due time."""
+        _pin_now(monkeypatch, datetime(2026, 4, 1, 10, 0))
+        task = make_task(schedule_type="monthly", time="09:00", day=31)
+        assert get_due_time(task, datetime(2026, 2, 28, 9, 0)) == datetime(2026, 3, 31, 9, 0)
+
+    def test_day_31_in_long_month_unchanged(self, monkeypatch):
+        _pin_now(monkeypatch, datetime(2026, 5, 31, 9, 1))
+        task = make_task(schedule_type="monthly", time="09:00", day=31)
+        assert get_due_time(task, datetime(2000, 1, 1)) == datetime(2026, 5, 31, 9, 0)

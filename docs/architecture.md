@@ -75,12 +75,15 @@ The system resolves this with two per-task fields: `catch_up` (boolean) and `cat
 
 On every runner tick, for each enabled task:
 
-1. Find the last successful run from `run_log.jsonl`
+1. Find the last consumed run from `run_log.jsonl`: the latest `success` or `skipped` entry, or the latest `error` once retries are exhausted. A skipped or abandoned due time is never re-evaluated on the next pass.
 2. Calculate the most recent scheduled due time after that last run
 3. If no due time exists, skip
 4. If the task is more than one runner interval late (6 minutes), it's a catch-up scenario
 5. Apply the task's catch-up rules: skip, catch up within window, or always catch up
 6. Log the outcome regardless — `status: skipped` entries are as important as `status: success`
+7. A failed task is retried with exponential backoff (10, 20, 40 ... minutes) up to `max_retries` times (default 2, override per task in `tasks.json` or globally with `TASK_MAX_RETRIES`), then abandoned until its next scheduled time
+
+Monthly tasks with `day` 29-31 run on the last day of shorter months.
 
 The log being append-only is a deliberate constraint. It means the runner's reconciliation logic always has a complete, trustworthy history. You can grep the log at any time to understand exactly what happened and when. There's no state that can be corrupted.
 

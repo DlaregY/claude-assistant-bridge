@@ -5,6 +5,7 @@ Designed to be run every 5 minutes via Windows Task Scheduler or Linux cron.
 """
 
 import os
+import calendar
 import glob
 import json
 import platform
@@ -33,6 +34,12 @@ RUN_LOG_FILE = os.getenv("RUN_LOG_FILE")
 LOGS_DIR = os.getenv("LOGS_DIR")
 USER_NAME = os.getenv("USER_DISPLAY_NAME", "User")
 TIMEZONE = os.getenv("TIMEZONE", "America/Chicago")
+
+# A failing task is retried with exponential backoff (10, 20, 40 ... minutes)
+# and abandoned after this many consecutive errors. Per-task "max_retries" in
+# tasks.json overrides it. 0 means a single attempt.
+DEFAULT_MAX_RETRIES = int(os.getenv("TASK_MAX_RETRIES", "2"))
+RETRY_BASE_MINUTES = 10
 
 # ---------------------------------------------------------------------------
 # Claude executable resolution
@@ -90,13 +97,21 @@ logging.basicConfig(
 # Helpers
 # ---------------------------------------------------------------------------
 
+def redact(text: str) -> str:
+    """Strip the bot token from anything that gets logged or sent (requests
+    errors embed the full URL, which includes the token)."""
+    if BOT_TOKEN and text:
+        return text.replace(BOT_TOKEN, "<bot-token>")
+    return text
+
+
 def send_telegram(text: str):
     """Send a message to the whitelisted user."""
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     try:
         requests.post(url, json={"chat_id": ALLOWED_USER_ID, "text": text}, timeout=10)
     except Exception as e:
-        logging.error(f"Failed to send Telegram message: {e}")
+        logging.error(f"Failed to send Telegram message: {redact(str(e))}")
 
 
 def load_tasks() -> list:
@@ -131,6 +146,46 @@ def load_last_runs() -> dict:
             except Exception:
                 continue
     return last_runs
+
+
+def load_run_state() -> dict:
+    """
+    Read run_log.jsonl and return, per task_id:
+      consumed    - datetime after which the next due time is searched: the latest
+                    success or skipped entry, or the latest error once the task
+                    has exhausted its retries (see max_retries in main()).
+      error_count - consecutive errors since that point
+      last_error  - datetime of the most recent of those errors
+    Treating skipped and exhausted-error entries as consumed is what stops a
+    missed or failing task from being re-evaluated on every 5-minute pass.
+    """
+    state = {}
+    if not os.path.exists(RUN_LOG_FILE):
+        return state
+    with open(RUN_LOG_FILE, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+                task_id = entry["task_id"]
+                ts = datetime.fromisoformat(entry["timestamp"])
+                status = entry.get("status")
+            except Exception:
+                continue
+            st = state.setdefault(task_id, {"consumed": None, "error_count": 0, "last_error": None})
+            if status in ("success", "skipped"):
+                if st["consumed"] is None or ts > st["consumed"]:
+                    st["consumed"] = ts
+                    st["error_count"] = 0
+                    st["last_error"] = None
+            elif status == "error":
+                if st["consumed"] is None or ts > st["consumed"]:
+                    st["error_count"] += 1
+                    if st["last_error"] is None or ts > st["last_error"]:
+                        st["last_error"] = ts
+    return state
 
 
 def append_log(entry: dict):
@@ -171,20 +226,22 @@ def get_due_time(task: dict, after: datetime) -> datetime | None:
     elif stype == "monthly":
         hour, minute = map(int, schedule["time"].split(":"))
         day = schedule.get("day", 1)
-        try:
-            candidate = now.replace(day=day, hour=hour, minute=minute, second=0, microsecond=0)
-            if after < candidate <= now:
-                return candidate
-            first_of_month = now.replace(day=1)
-            last_month = first_of_month - timedelta(days=1)
-            candidate_last = last_month.replace(
-                day=min(day, last_month.day),
-                hour=hour, minute=minute, second=0, microsecond=0
-            )
-            if after < candidate_last <= now:
-                return candidate_last
-        except ValueError:
-            pass
+        # Clamp to the month's length so day 29-31 fires on the last day of
+        # shorter months instead of raising ValueError and never running.
+        days_in_month = calendar.monthrange(now.year, now.month)[1]
+        candidate = now.replace(
+            day=min(day, days_in_month), hour=hour, minute=minute, second=0, microsecond=0
+        )
+        if after < candidate <= now:
+            return candidate
+        first_of_month = now.replace(day=1)
+        last_month = first_of_month - timedelta(days=1)
+        candidate_last = last_month.replace(
+            day=min(day, last_month.day),
+            hour=hour, minute=minute, second=0, microsecond=0
+        )
+        if after < candidate_last <= now:
+            return candidate_last
 
     elif stype == "once":
         due = datetime.fromisoformat(schedule["datetime"])
@@ -204,7 +261,7 @@ def get_due_time(task: dict, after: datetime) -> datetime | None:
     return None
 
 
-def run_task(task: dict, trigger: str) -> bool:
+def run_task(task: dict, trigger: str, attempt: int = 1, max_attempts: int = 1) -> bool:
     """Execute a task via Claude Code. Returns True on success."""
     task_id = task["id"]
     prompt = task["prompt"]
@@ -250,8 +307,15 @@ def run_task(task: dict, trigger: str) -> bool:
             "duration_seconds": duration,
             "error": str(e)
         })
-        logging.error(f"Task {task_id} failed: {e}")
-        send_telegram(f"❌ Scheduled task failed: [{task['description']}]\n\nError: {str(e)}")
+        logging.error(f"Task {task_id} failed (attempt {attempt}/{max_attempts}): {redact(str(e))}")
+        if attempt < max_attempts:
+            retry_note = f"Will retry in about {RETRY_BASE_MINUTES * 2 ** (attempt - 1)} minutes."
+        else:
+            retry_note = "No more retries until the next scheduled time."
+        send_telegram(
+            f"❌ Scheduled task failed (attempt {attempt}/{max_attempts}): [{task['description']}]\n\n"
+            f"Error: {redact(str(e))}\n{retry_note}"
+        )
         return False
 
 
@@ -263,7 +327,7 @@ def main():
     logging.info(f"Runner started (platform: {platform.system()}, claude: {CLAUDE_EXE})")
     now = datetime.now()
     tasks = load_tasks()
-    last_runs = load_last_runs()
+    run_state = load_run_state()
 
     if not tasks:
         logging.info("No enabled tasks found")
@@ -272,8 +336,21 @@ def main():
     for task in tasks:
         task_id = task["id"]
         try:
-            last_success = last_runs.get(task_id)
-            after = last_success if last_success else datetime(2000, 1, 1)
+            st = run_state.get(task_id, {"consumed": None, "error_count": 0, "last_error": None})
+            max_retries = int(task.get("max_retries", DEFAULT_MAX_RETRIES))
+            max_attempts = max_retries + 1
+            after = st["consumed"]
+            attempt = st["error_count"] + 1
+            if st["error_count"] >= max_attempts:
+                # Retries exhausted: the failed due time is consumed and the
+                # next due time starts a fresh attempt count.
+                after = max(after or datetime(2000, 1, 1), st["last_error"])
+                attempt = 1
+            elif st["error_count"] > 0:
+                backoff = timedelta(minutes=RETRY_BASE_MINUTES * 2 ** (st["error_count"] - 1))
+                if now < st["last_error"] + backoff:
+                    continue
+            after = after or datetime(2000, 1, 1)
             due_time = get_due_time(task, after)
 
             if due_time is None:
@@ -318,9 +395,9 @@ def main():
                 trigger = "scheduled"
                 logging.info(f"Task {task_id} running on schedule")
 
-            run_task(task, trigger)
+            run_task(task, trigger, attempt=attempt, max_attempts=max_attempts)
         except Exception as e:
-            logging.error(f"Task {task_id} errored during scheduling: {e}")
+            logging.error(f"Task {task_id} errored during scheduling: {redact(str(e))}")
             continue
 
     logging.info("Runner finished")

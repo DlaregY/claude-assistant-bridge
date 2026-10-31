@@ -140,7 +140,7 @@ claude-assistant-bridge/
 │   ├── setup-linux-vps.md
 │   └── comparison-openclaw.md
 └── tests/
-    ├── test_scheduler.py   # 18 catch-up logic tests
+    ├── test_scheduler.py   # catch-up, retry and monthly-clamp tests
     └── test_webhook.py     # 16 routing, auth, and dedup tests
 ```
 

@@ -51,6 +51,10 @@ load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), ".env"))
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ALLOWED_USER_ID = int(os.getenv("TELEGRAM_ALLOWED_USER_ID"))
 PORT = int(os.getenv("WEBHOOK_PORT", 8080))
+# Both documented deployments reach this server through a localhost proxy
+# (cloudflared quick tunnel on Windows, Caddy on the VPS), so bind to loopback
+# unless told otherwise. Set WEBHOOK_HOST=0.0.0.0 to listen on all interfaces.
+HOST = os.getenv("WEBHOOK_HOST", "127.0.0.1")
 TASKS_FILE = os.getenv("TASKS_FILE")
 RUN_LOG_FILE = os.getenv("RUN_LOG_FILE")
 LOGS_DIR = os.getenv("LOGS_DIR")
@@ -250,7 +254,7 @@ async def lifespan(app):
     if not os.getenv("CLOUDFLARE_TUNNEL_URL", ""):
         health_task.cancel()
 
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 
 
 @app.middleware("http")
@@ -368,6 +372,14 @@ async def _tunnel_health_loop():
             logging.error(f"Tunnel health check error: {e}")
 
         await asyncio.sleep(TUNNEL_CHECK_INTERVAL)
+
+
+def redact(text: str) -> str:
+    """Strip the bot token from anything logged or echoed back to Telegram
+    (requests errors embed the full API URL, which includes the token)."""
+    if BOT_TOKEN and text:
+        return text.replace(BOT_TOKEN, "<bot-token>")
+    return text
 
 
 def send_telegram(chat_id: int, text: str):
@@ -594,9 +606,9 @@ async def _process_message(chat_id: int, text: str):
             logging.info("Responded successfully")
 
     except Exception as e:
-        logging.error(f"Processing error: {e}")
+        logging.error(f"Processing error: {redact(str(e))}")
         try:
-            send_telegram(chat_id, f"❌ Error: {type(e).__name__}: {str(e)[:200]}")
+            send_telegram(chat_id, f"❌ Error: {type(e).__name__}: {redact(str(e))[:200]}")
         except Exception:
             logging.error(f"Failed to send error message to {chat_id}")
 
@@ -632,4 +644,4 @@ async def startup():
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=PORT)
+    uvicorn.run(app, host=HOST, port=PORT)
